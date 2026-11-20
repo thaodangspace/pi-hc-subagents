@@ -30,6 +30,9 @@ export interface ExtensionRuntime {
   configWarnings: ConfigWarning[];
   loadedConfig: LoadedConfig;
   agentDirs: AgentDirectories;
+  /** Base pi agent directory (contains agents/). */
+  agentDir: string;
+  env: NodeJS.ProcessEnv;
   cwd: string;
   trusted: boolean;
   parentSessionId: string;
@@ -94,6 +97,8 @@ export async function createRuntime(options: CreateRuntimeOptions): Promise<Exte
     config: loaded.config,
     configWarnings: loaded.warnings,
     loadedConfig: loaded,
+    agentDir,
+    env,
     agentDirs: {
       user: path.join(agentDir, "agents"),
       project: findNearestProjectAgentsDir(options.cwd),

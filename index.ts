@@ -6,8 +6,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { formatConfigDiagnostics } from "./src/config/config.ts";
+import { Registry } from "./src/runtime/registry.ts";
+import { Scheduler } from "./src/runtime/scheduler.ts";
 import { type ExtensionRuntime, createRuntime, runtimeDiagnostics } from "./src/runtime/runtime.ts";
 import { setupMessage, setupNotification } from "./src/runtime/setup-mode.ts";
+import { formatDuration } from "./src/runtime/result-format.ts";
+import { registerSpawnTool } from "./src/tools/spawn-tool.ts";
+import type { ToolSession } from "./src/tools/session.ts";
 
 const COMMAND_NAME = "hc-subagents";
 
@@ -23,6 +28,8 @@ const HELP_TEXT = [
 
 export default function hcSubagentsExtension(pi: ExtensionAPI): void {
   let runtime: ExtensionRuntime | null = null;
+  let toolSession: ToolSession | null = null;
+  let toolsRegistered = false;
   let setupNotified = false;
 
   pi.registerCommand(COMMAND_NAME, {
@@ -56,8 +63,16 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
           return;
         }
         case "list": {
-          // The registry arrives in phase 5/8; until then report the honest empty state.
-          ctx.ui.notify("No subagents yet.\n\n" + runtimeDiagnostics(runtime), "info");
+          const records = toolSession?.registry.listForParent(runtime.parentSessionId) ?? [];
+          if (records.length === 0) {
+            ctx.ui.notify("No subagents yet.", "info");
+            return;
+          }
+          const lines = records.map((record) => {
+            const duration = formatDuration(Date.now() - Date.parse(record.createdAt));
+            return `${record.slug}  ${record.state}  ${record.terminal}  ${record.agent}  ${duration}`;
+          });
+          ctx.ui.notify(lines.join("\n"), "info");
           return;
         }
         default:
@@ -74,7 +89,10 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
       parentSessionId: ctx.sessionManager.getSessionId(),
     });
 
-    if (runtime.mode === "child") return;
+    if (runtime.mode === "child") {
+      toolSession = null;
+      return;
+    }
 
     if (runtime.configWarnings.length > 0 && ctx.hasUI) {
       const summary = runtime.configWarnings
@@ -89,12 +107,29 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
       if (ctx.hasUI) ctx.ui.notify(setupNotification(runtime.prerequisites), "warning");
     }
 
-    // Tools are registered in phase 7, after prerequisite checks. Never expose
-    // a tool when the runtime is not ready.
+    if (runtime.mode === "ready") {
+      toolSession = {
+        runtime,
+        registry: new Registry(),
+        scheduler: new Scheduler({
+          maxConcurrency: runtime.config.maxConcurrency,
+          parallelWrites: runtime.config.parallelWrites,
+        }),
+      };
+      if (!toolsRegistered) {
+        registerSpawnTool(pi, () => toolSession);
+        toolsRegistered = true;
+      }
+    } else {
+      toolSession = null;
+    }
+    // Tools are registered only after prerequisite checks. Never expose a tool
+    // when the runtime is not ready.
   });
 
   pi.on("session_shutdown", async () => {
     // Lifecycle cleanup arrives in phase 8.
+    toolSession = null;
     runtime = null;
   });
 }
