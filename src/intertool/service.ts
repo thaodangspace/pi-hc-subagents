@@ -159,7 +159,10 @@ export class IntertoolServiceV1 implements HcSubagentsService {
       const key = `${origin}:${request.clientRequestId}`;
       const existing = this.#idempotency.get(key);
       if (existing && this.#now() - existing.at <= IDEMPOTENCY_TTL_MS) {
-        if (existing.fingerprint === fingerprintValue) return structuredClone(existing.view);
+        if (existing.fingerprint === fingerprintValue) {
+          const current = this.#session.registry.get(existing.view.childId);
+          return structuredClone(current ?? existing.view);
+        }
         throw new HcSubagentError("validation", `clientRequestId ${request.clientRequestId} was reused with different input`);
       }
       this.#pruneIdempotency();

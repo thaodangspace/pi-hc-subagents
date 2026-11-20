@@ -299,6 +299,17 @@ export async function cancelRecord(
       pollMs: session.runtime.config.pollIntervalMs,
     }).catch(() => ({ interrupted: false, killed: false, outcome: null }));
     killed = abort.killed;
+    // A blocked/idle child leaves `working` before the grace-kill step; cancel
+    // still terminates it when the configured policy says to kill.
+    if (kill && !killed) {
+      try {
+        await session.runtime.core.kill(record.terminal);
+        killed = true;
+      } catch (error) {
+        const normalized = toHcSubagentError(error);
+        if (normalized.code !== "not_found" && normalized.code !== "finished") throw normalized;
+      }
+    }
   }
   const now = new Date().toISOString();
   const updated = session.registry.update(record.childId, {

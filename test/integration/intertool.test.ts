@@ -286,3 +286,20 @@ test("an external helper extension can spawn, list, wait, and subscribe", { skip
     await harness.cleanup();
   }
 });
+
+test("cancel without force kills a blocked child when killOnAbort is enabled", { skip: !available }, async () => {
+  const harness = await createHarness("blocked");
+  try {
+    const view = await harness.service.spawn({ agent: "reviewer", task: "Block on permission.", origin: "workflow" });
+    await waitFor(() => {
+      const record = harness.session.registry.get(view.childId);
+      return record?.state === "blocked" ? record : undefined;
+    });
+    await harness.service.cancel(view.childId);
+    const record = harness.session.registry.get(view.childId);
+    assert.equal(record?.state, "cancelled");
+    assert.equal(await harness.session.runtime.core.tryGet(record?.terminal ?? ""), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
