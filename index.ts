@@ -84,6 +84,10 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    if (toolSession) {
+      await shutdownOwnedChildren(toolSession).catch(() => {});
+      toolSession = null;
+    }
     runtime = await createRuntime({
       cwd: ctx.cwd,
       trusted: ctx.isProjectTrusted(),

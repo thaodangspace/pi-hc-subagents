@@ -411,6 +411,7 @@ export function registerSpawnTool(
         throw error;
       }
 
+      let locateController: AbortController | null = null;
       try {
         const paths = createRunPaths({
           agentName: agent.name,
@@ -489,8 +490,10 @@ export function registerSpawnTool(
           }),
         );
 
-        const locateController = new AbortController();
-        const locateSignal = signal ? AbortSignal.any([signal, locateController.signal]) : locateController.signal;
+        locateController = new AbortController();
+        const locateSignal = signal
+          ? AbortSignal.any([signal, locateController.signal])
+          : locateController.signal;
         const locatePromise = locateSessionFile({
           sessionDir: paths.sessionDir,
           childId: paths.childId,
@@ -804,6 +807,7 @@ export function registerSpawnTool(
         }
         throw normalized;
       } finally {
+        locateController?.abort();
         release?.();
       }
     },
