@@ -73,6 +73,8 @@ export async function cleanupFinishedChild(
   record: SubagentRecord,
   options: CleanupOptions,
 ): Promise<void> {
+  // Close before the early-out: a kept child no longer needs the hint socket.
+  session.settleHints?.close(record.childId);
   if (!options.remove) return;
   try {
     await session.runtime.core.kill(record.terminal);

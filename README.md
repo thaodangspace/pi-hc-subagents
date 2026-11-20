@@ -174,6 +174,9 @@ Relevant M2 keys: `defaultMode`, `notify`, `retentionDays`, `intertool.exposeSer
 `intertool.emitEvents`, `intertool.includeTaskPreview`, `hc.socketPath`,
 `hc.parentTerminal`, and the existing concurrency, polling, and timeout values.
 
+`wakeOnSettle` (default `true`, override with `PI_HC_SUBAGENTS_WAKE_ON_SETTLE`) lets a
+settled child wake its waiter; set it to `false` for poll-only behaviour.
+
 ## Agents
 
 Built-in agents: `reviewer` and `scout` (read-only), `worker` (write-capable). User agents

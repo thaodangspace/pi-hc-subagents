@@ -377,6 +377,9 @@ export function registerSpawnTool(
           }),
         );
         await mkdir(paths.sessionDir, { recursive: true, mode: 0o700 }).catch(() => {});
+        // Start the hint channel before the (foreground or background) wait so
+        // the very first hint can wake it. Idempotent per child.
+        if (record.pipeName) session.settleHints?.start(record.childId, record.pipeName);
         session.persistence?.append(record);
         session.service?.emitSpawned(record, single.task);
 

@@ -10,7 +10,9 @@ import { createSubagentRecord, spawnChild } from "../../src/child/child-spawn.ts
 import { createRunPaths } from "../../src/child/paths.ts";
 import { shutdownOwnedChildren } from "../../src/runtime/lifecycle.ts";
 import { Registry } from "../../src/runtime/registry.ts";
+import { cancelRecord } from "../../src/runtime/run-ops.ts";
 import { Scheduler } from "../../src/runtime/scheduler.ts";
+import { SettleHintHub } from "../../src/runtime/settle-hints.ts";
 import { createRuntime } from "../../src/runtime/runtime.ts";
 import type { ToolSession } from "../../src/tools/session.ts";
 import { hcAvailable, startIsolatedHc } from "./harness.ts";
@@ -33,6 +35,7 @@ function agent(): AgentDefinition {
 async function createSession(
   isolated: Awaited<ReturnType<typeof startIsolatedHc>>,
   parentSessionId = "it-lifecycle-parent",
+  options: { mode?: string; settleHints?: SettleHintHub } = {},
 ): Promise<ToolSession> {
   const agentDir = path.join(isolated.root, "agent");
   await mkdir(agentDir, { recursive: true });
@@ -41,13 +44,18 @@ async function createSession(
     cwd: isolated.root,
     trusted: true,
     parentSessionId,
-    env: { ...isolated.env, PI_HC_SUBAGENTS_TEST_CHILD: fakeChild, PI_HC_TEST_CHILD_MODE: "silent" },
+    env: {
+      ...isolated.env,
+      PI_HC_SUBAGENTS_TEST_CHILD: fakeChild,
+      PI_HC_TEST_CHILD_MODE: options.mode ?? "silent",
+    },
     agentDir,
   });
   return {
     runtime,
     registry: new Registry(),
     scheduler: new Scheduler({ maxConcurrency: 4, parallelWrites: false }),
+    ...(options.settleHints === undefined ? {} : { settleHints: options.settleHints }),
   };
 }
 
@@ -150,6 +158,42 @@ test("shutdown never touches another parent session's records", { skip: !availab
     const theirTerminal = await isolated.core.get(theirs.terminal);
     assert.equal(theirTerminal.state, "live");
     await isolated.core.kill(theirs.terminal);
+  } finally {
+    await isolated.cleanup();
+  }
+});
+
+async function waitForClosedEpisodes(hub: SettleHintHub, childId: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (hub.stats(childId)?.state === "open") return;
+    if (Date.now() > deadline) throw new Error("the settle-hint subscription did not open");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+test("cancel closes the child's settle-hint subscription and closeAll empties the hub", { skip: !available }, async () => {
+  const isolated = await startIsolatedHc();
+  try {
+    const hub = new SettleHintHub();
+    const session = await createSession(isolated, "it-settle-cancel", { mode: "pipe", settleHints: hub });
+    const child = await spawnSilentChild(session, "6");
+    assert.match(child.pipeName ?? "", /^pi-hc-[a-f0-9]{16}-/);
+
+    assert.equal(hub.start(child.childId, child.pipeName as string), true);
+    await waitForClosedEpisodes(hub, child.childId);
+    assert.equal(hub.stats(child.childId)?.degraded, false);
+    assert.equal(hub.size, 1);
+
+    await cancelRecord(session, child);
+    assert.equal(hub.stats(child.childId)?.state, "closed");
+    assert.equal(hub.stats(child.childId)?.degraded, false);
+    assert.equal(hub.size, 0, "a cancelled child keeps no live subscription");
+
+    // session_shutdown: teardown calls closeAll(); nothing stays subscribed.
+    hub.closeAll();
+    assert.equal(hub.size, 0);
+    assert.equal(hub.stats(child.childId), undefined, "closeAll also drops the retained snapshot");
   } finally {
     await isolated.cleanup();
   }

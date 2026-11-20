@@ -220,6 +220,9 @@ export async function waitForRecord(
     ...(record.turns.at(-1)?.startedAtMs === undefined ? {} : { startedAtMs: record.turns.at(-1)?.startedAtMs }),
   });
 
+  // A wait on an existing child starts a fresh episode if its previous one was
+  // closed; `start` is a no-op while the subscription is live.
+  if (record.pipeName) session.settleHints?.start(record.childId, record.pipeName);
   const wake = wakeSourceFor(session.settleHints, record.childId);
   const outcome = await waitForChild({
     core: session.runtime.core,
@@ -326,6 +329,9 @@ export async function cancelRecord(
         : turn,
     ),
   });
+  // Both the interrupt and force-kill paths converge here: release the socket
+  // once the record can no longer settle.
+  session.settleHints?.close(record.childId);
   if (updated.runDir) {
     await updateRunMetadataFile(path.join(updated.runDir, "run.json"), {
       state: "cancelled",

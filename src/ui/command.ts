@@ -109,6 +109,7 @@ export function registerHcSubagentsCommand(pi: ExtensionAPI, deps: CommandDeps):
           "hc.version": runtime.prerequisites.coreVersion ?? "unknown",
           mode: runtime.mode,
           "defaultMode": runtime.config.defaultMode,
+          "wakeOnSettle": String(runtime.config.wakeOnSettle),
           "retentionDays": String(runtime.config.retentionDays),
           "intertool.exposeService": String(runtime.config.intertool.exposeService),
         });

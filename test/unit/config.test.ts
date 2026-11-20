@@ -27,6 +27,7 @@ test("defaults match the approved configuration", () => {
   assert.equal(DEFAULT_CONFIG.parallelWrites, false);
   assert.equal(DEFAULT_CONFIG.cleanup, "keep");
   assert.equal(DEFAULT_CONFIG.retentionDays, 14);
+  assert.equal(DEFAULT_CONFIG.wakeOnSettle, true);
   assert.deepEqual(DEFAULT_CONFIG.excludeTools, ["hc_subagent", "hc_subagent_control"]);
   assert.equal(DEFAULT_CONFIG.exposure, "direct");
   assert.deepEqual(DEFAULT_CONFIG.intertool, {
@@ -198,6 +199,70 @@ test("hc connection env overrides are validated", () => {
     invalid.warnings.map((warning) => warning.field),
     ["PI_HC_SUBAGENTS_SOCKET", "PI_HC_SUBAGENTS_PARENT_TERMINAL"],
   );
+});
+
+test("wakeOnSettle rejects only non-booleans and defaults to true", () => {
+  assert.deepEqual(validateConfig({ wakeOnSettle: false }, "global").value, { wakeOnSettle: false });
+  assert.deepEqual(validateConfig({ wakeOnSettle: true }, "project").value, { wakeOnSettle: true });
+
+  const invalid = validateConfig({ wakeOnSettle: "yes" }, "global");
+  assert.deepEqual(invalid.value, {});
+  assert.deepEqual(invalid.warnings.map((warning) => warning.field), ["wakeOnSettle"]);
+});
+
+test("wakeOnSettle env override accepts 1/true/0/false and warns otherwise", () => {
+  for (const [raw, expected] of [
+    ["1", true],
+    ["true", true],
+    ["0", false],
+    ["false", false],
+  ] as const) {
+    const parsed = envOverrides({ PI_HC_SUBAGENTS_WAKE_ON_SETTLE: raw });
+    assert.deepEqual(parsed.warnings, [], `no warning for ${raw}`);
+    assert.equal(parsed.value.wakeOnSettle, expected);
+  }
+
+  const invalid = envOverrides({ PI_HC_SUBAGENTS_WAKE_ON_SETTLE: "maybe" });
+  assert.equal(invalid.value.wakeOnSettle, undefined);
+  assert.equal(invalid.warnings.length, 1);
+  assert.equal(invalid.warnings[0]?.source, "env");
+  assert.equal(invalid.warnings[0]?.field, "PI_HC_SUBAGENTS_WAKE_ON_SETTLE");
+
+  // An empty value is not an override at all.
+  assert.equal(envOverrides({ PI_HC_SUBAGENTS_WAKE_ON_SETTLE: "" }).value.wakeOnSettle, undefined);
+});
+
+test("wakeOnSettle loads from a project config layer", async () => {
+  const root = await scratch();
+  try {
+    const agentDir = path.join(root, "agent");
+    const cwd = path.join(root, "repo");
+    await writeJson(path.join(agentDir, "hc-subagents.json"), { wakeOnSettle: true });
+    await writeJson(path.join(cwd, ".pi", "hc-subagents.json"), { wakeOnSettle: false });
+
+    const loaded = await loadConfig({ cwd, trusted: true, agentDir, env: {} });
+    assert.equal(loaded.config.wakeOnSettle, false);
+    assert.deepEqual(loaded.warnings, []);
+
+    const enabled = await loadConfig({
+      cwd,
+      trusted: true,
+      agentDir,
+      env: { PI_HC_SUBAGENTS_WAKE_ON_SETTLE: "1" },
+    });
+    assert.equal(enabled.config.wakeOnSettle, true);
+
+    const badEnv = await loadConfig({
+      cwd,
+      trusted: true,
+      agentDir,
+      env: { PI_HC_SUBAGENTS_WAKE_ON_SETTLE: "on" },
+    });
+    assert.equal(badEnv.config.wakeOnSettle, false, "an invalid env value keeps the project value");
+    assert.equal(badEnv.warnings[0]?.source, "env");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("config diagnostics include paths, warnings, and flags", async () => {

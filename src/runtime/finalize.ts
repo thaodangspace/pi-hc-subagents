@@ -65,6 +65,7 @@ export function recordDetails(
     ...(record.exitCode === undefined ? {} : { exitCode: record.exitCode }),
     ...(record.signal === undefined ? {} : { signal: record.signal }),
     background: record.background,
+    ...(record.observedBy === undefined ? {} : { observedBy: record.observedBy }),
     ...(overrides.text === undefined ? {} : textInfo),
     ...overrides,
   };
@@ -111,6 +112,9 @@ export interface FinalizeResult {
 
 export async function finalizeFromSession(options: FinalizeOptions): Promise<FinalizeResult> {
   const { session, record, terminal, parsed } = options;
+  // Both the failure and the success path return from here, so release the
+  // child's hint socket before either one builds a result.
+  session.settleHints?.close(record.childId);
   const now = new Date().toISOString();
   const observedPatch: { observedBy?: "push" | "poll" } =
     options.observedBy === undefined ? {} : { observedBy: options.observedBy };

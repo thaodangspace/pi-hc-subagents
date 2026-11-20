@@ -126,7 +126,8 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
       }),
       persistence,
       monitors: new MonitorManager(),
-      settleHints: new SettleHintHub(),
+      // No hub at all when the feature is off: an ignored socket is dead weight.
+      ...(runtime.config.wakeOnSettle ? { settleHints: new SettleHintHub() } : {}),
       isIdle: () => (typeof ctx.isIdle === "function" ? ctx.isIdle() : true),
     };
     session.providers = new ProviderRegistry([new HcLocalProvider(session)]);
@@ -138,11 +139,14 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
       runsRoot,
       parentSessionId: runtime.parentSessionId,
     }).catch(() => []);
-    await reconcileRuns({
+    const reconciled = await reconcileRuns({
       registry: session.registry,
       summaries: mergeSummaries(fromEntries, fromDisk),
       core: runtime.core,
     }).catch(() => ({ restored: [], stale: [] }));
+    // Stale runs never got a hub, so this is a best-effort no-op that keeps the
+    // "every end-of-life path closes" rule uniform.
+    for (const stale of reconciled.stale) session.settleHints?.close(stale.childId);
 
     session.notifier = new Notifier({
       sendMessage: (message, options) => pi.sendMessage(message, options),
@@ -190,14 +194,20 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
     refreshWidget();
 
     // Retention is best effort and never blocks tool use.
-    await cleanupExpiredRuns({
+    const retained = await cleanupExpiredRuns({
       runsRoot,
       retentionDays: runtime.config.retentionDays,
       isTerminalLive: async (terminal) => {
         const record = await runtime?.core.tryGet(terminal).catch(() => null);
         return record?.state === "live";
       },
-    }).catch(() => {});
+    }).catch(() => null);
+    if (retained && retained.removed.length > 0) {
+      const removed = new Set(retained.removed);
+      for (const record of session.registry.listForParent(runtime.parentSessionId)) {
+        if (record.runDir && removed.has(record.runDir)) session.settleHints?.close(record.childId);
+      }
+    }
     // Tools are registered only after prerequisite checks. Never expose a tool
     // when the runtime is not ready.
   });

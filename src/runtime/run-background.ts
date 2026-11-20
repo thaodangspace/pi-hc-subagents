@@ -156,6 +156,9 @@ export async function startBackgroundRun(
 
     await mkdir(paths.sessionDir, { recursive: true, mode: 0o700 }).catch(() => {});
 
+    // The pipe exists only after spawn; restored runs have no pipeName and stay poll-only.
+    if (record.pipeName) session.settleHints?.start(record.childId, record.pipeName);
+
     locateController = new AbortController();
     const locateSignal = request.signal
       ? AbortSignal.any([request.signal, locateController.signal])

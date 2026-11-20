@@ -149,6 +149,8 @@ export async function sendFollowUp(
         initialPhase: "working",
         startedAtMs,
       });
+      // A follow-up settles a new turn: a closed hub is restarted as a fresh episode.
+      if (started.pipeName) session.settleHints?.start(started.childId, started.pipeName);
       const wake = wakeSourceFor(session.settleHints, started.childId);
       session.monitors.start({
         session,
@@ -173,6 +175,7 @@ export async function sendFollowUp(
     initialPhase: "working",
     startedAtMs,
   });
+  if (record.pipeName) session.settleHints?.start(record.childId, record.pipeName);
   const wake = wakeSourceFor(session.settleHints, record.childId);
   const outcome = await waitForChild({
     core: session.runtime.core,

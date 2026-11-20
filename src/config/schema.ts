@@ -47,6 +47,8 @@ export interface HcSubagentsConfig {
   parallelWrites: boolean;
   cleanup: CleanupPolicy;
   retentionDays: number;
+  /** Wake waiters on the child's settled pipe notification; false is poll-only. */
+  wakeOnSettle: boolean;
   excludeTools: string[];
   exposure: Exposure;
   intertool: IntertoolConfig;
@@ -68,6 +70,7 @@ export const DEFAULT_CONFIG: Readonly<HcSubagentsConfig> = Object.freeze({
   parallelWrites: false,
   cleanup: "keep",
   retentionDays: 14,
+  wakeOnSettle: true,
   excludeTools: ["hc_subagent", "hc_subagent_control"],
   exposure: "direct",
   intertool: {
@@ -300,6 +303,7 @@ export function validateConfig(raw: unknown, source: ConfigSource): ValidationRe
   boolean("killOnTimeout");
   boolean("monitorAfterReturn");
   boolean("parallelWrites");
+  boolean("wakeOnSettle");
   enumeration("defaultMode", DEFAULT_MODES);
   enumeration("notify", NOTIFY_MODES);
   enumeration("agentScope", AGENT_SCOPES);
@@ -358,6 +362,20 @@ export function envOverrides(env: NodeJS.ProcessEnv): ValidationResult {
         field: name,
         message: `expected an integer between ${min} and ${max}`,
         value: rawValue,
+      });
+    }
+  }
+
+  const wakeOnSettle = env.PI_HC_SUBAGENTS_WAKE_ON_SETTLE;
+  if (wakeOnSettle !== undefined && wakeOnSettle !== "") {
+    if (wakeOnSettle === "1" || wakeOnSettle === "true") value.wakeOnSettle = true;
+    else if (wakeOnSettle === "0" || wakeOnSettle === "false") value.wakeOnSettle = false;
+    else {
+      warnings.push({
+        source: "env",
+        field: "PI_HC_SUBAGENTS_WAKE_ON_SETTLE",
+        message: "expected 1, true, 0, or false",
+        value: wakeOnSettle,
       });
     }
   }

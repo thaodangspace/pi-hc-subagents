@@ -77,6 +77,7 @@ function detailsFor(
     ...(record.exitCode === undefined ? {} : { exitCode: record.exitCode }),
     ...(record.signal === undefined ? {} : { signal: record.signal }),
     background: record.background,
+    ...(record.observedBy === undefined ? {} : { observedBy: record.observedBy }),
     ...(overrides.text === undefined ? {} : textInfo),
     ...overrides,
   };
@@ -319,6 +320,9 @@ async function waitAction(
       : { startedAtMs: record.turns.at(-1)?.startedAtMs }),
   });
 
+  // A wait on an existing child starts a fresh episode if its previous one was
+  // closed; `start` is a no-op while the subscription is live.
+  if (record.pipeName) session.settleHints?.start(record.childId, record.pipeName);
   const wake = wakeSourceFor(session.settleHints, record.childId);
   const outcome = await waitForChild({
     core: session.runtime.core,

@@ -8,6 +8,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { NOTIFICATION_VERSION } from "../../src/child/pipe-protocol.ts";
 import { startChildPipeServer, type ChildPipeServer } from "../../src/child/pipe-server.ts";
 
 type Mode =
@@ -24,7 +25,8 @@ type Mode =
   | "exit-early"
   | "task"
   | "pipe"
-  | "pipe-streaming";
+  | "pipe-streaming"
+  | "pipe-push";
 
 function parseArgs(argv: string[]): { sessionId: string; sessionDir: string; name: string; taskFile: string | null } {
   let sessionId = "";
@@ -64,6 +66,7 @@ function mode(): Mode {
     case "task":
     case "pipe":
     case "pipe-streaming":
+    case "pipe-push":
       return value;
     default:
       return "success";
@@ -390,6 +393,38 @@ switch (selectedMode) {
   case "pipe-streaming":
     emitStatus("working", args.name || "fake child");
     void startFakePipe().catch(() => emitStatus("error", "fake pipe failed"));
+    finishAndStayAlive();
+    break;
+  case "pipe-push":
+    // Settles in one turn and broadcasts exactly one Phase-1 `settled` frame so
+    // an integration test can prove the parent woke on push, not on its poll.
+    // The frame is broadcast after `done`, matching child.ts (agent_settled
+    // fires once the terminal already reports the settled turn).
+    emitStatus("working", args.name || "fake child");
+    void startFakePipe()
+      .then(() => {
+        setTimeout(() => {
+          fakeSessionFile = writeSession({
+            sessionDir: args.sessionDir,
+            sessionId: args.sessionId,
+            taskText: actualTask(taskText),
+            stopReason: "stop",
+            text: "Fake push result.",
+          });
+          emitStatus("done", args.name || "fake child");
+          setTimeout(() => {
+            pipeServer?.broadcast({
+              type: "settled",
+              v: NOTIFICATION_VERSION,
+              turn: pipeTurns,
+              status: "completed",
+              ...(fakeSessionFile === null ? {} : { sessionFile: fakeSessionFile }),
+              at: new Date().toISOString(),
+            });
+          }, 150);
+        }, 1_500);
+      })
+      .catch(() => emitStatus("error", "fake pipe failed"));
     finishAndStayAlive();
     break;
   case "task": {
