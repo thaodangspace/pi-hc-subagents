@@ -34,6 +34,7 @@ export interface PersistedRunSummary {
   terminalName: string;
   sessionId: string;
   sessionFile: string | null;
+  pipeName?: string;
   runDir: string;
   resultFile: string;
   slug: string;
@@ -95,6 +96,7 @@ export function toPersistedSummary(record: SubagentRecord): PersistedRunSummary 
     terminalName: record.terminalName,
     sessionId: record.sessionId,
     sessionFile: record.sessionFile,
+    ...(record.pipeName ? { pipeName: record.pipeName } : {}),
     runDir: record.runDir ?? "",
     resultFile: record.resultFile ?? "",
     slug: record.slug,
@@ -169,6 +171,7 @@ export function parsePersistedSummary(value: unknown): PersistedRunSummary | nul
     ),
   };
   if (typeof value.settledAt === "string") summary.settledAt = value.settledAt;
+  if (typeof value.pipeName === "string") summary.pipeName = value.pipeName;
   if (typeof value.outcome === "string") summary.outcome = value.outcome as TurnOutcome;
   if (isRecord(value.usage)) summary.usage = value.usage as unknown as Usage;
   if (typeof value.error === "string") summary.error = value.error;

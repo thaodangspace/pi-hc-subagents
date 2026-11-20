@@ -187,7 +187,7 @@ function outcomeKey(result: BatchTaskResult): string {
 }
 
 function compactPreview(result: BatchTaskResult): string {
-  if (result.skipped) return "not run because an earlier step failed";
+  if (result.skipped) return "not run because an earlier step did not complete";
   if (result.error) return `error: ${result.error}`;
   const text = result.text ?? "";
   const preview = truncateForModel(text, { maxBytes: 600, maxLines: 8 }).text;
@@ -294,7 +294,7 @@ export async function runBatch(input: BatchRunInput): Promise<AgentToolResult<Ba
         );
         const entry = taskResult(result, index);
         results.push(entry);
-        if (entry.state === "failed" || entry.state === "cancelled") {
+        if (entry.state === "failed" || entry.state === "cancelled" || entry.state === "blocked") {
           stopped = true;
         } else {
           previous = await finalText(result);

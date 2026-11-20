@@ -9,13 +9,12 @@ source of the final result.
 
 ## Status
 
-Milestones 1 and 2 are implemented (phases 1–12 of the implementation plan):
-synchronous and background delegation, the notifier queue, status widget, project
-agents with trust/confirmation, the intertool service v1, and run persistence,
-resume reconciliation, and retention.
+Milestones 1–3 are implemented (phases 1–14 of the implementation plan):
+parallel `tasks`, sequential `chain`, private-pipe follow-ups with `send`, plus the
+notifier queue, status widget, project agents with trust/confirmation, the intertool
+service v1, and run persistence, resume reconciliation, and retention.
 
-Milestone 3 (parallel tasks, chain, private-pipe follow-ups, providers/result
-adapters) is not implemented yet. The tool schema intentionally omits those fields.
+Phase 15 (providers/result adapters and release hardening) is not implemented yet.
 
 See [`SPEC.md`](./SPEC.md) for the contract and [`PLAN.md`](./PLAN.md) for the research
 and design record.
@@ -45,16 +44,34 @@ hc run --bg --name pi pi -e ./index.ts
 
 - `hc_subagent` — spawn one child and either wait for its result or return immediately.
   - `agent`, `task`, `cwd`, `model`, `thinking`, `timeoutMs`
+  - `tasks` — run 1–8 children concurrently (read-only work; write-capable children in
+    the same cwd are queued by `parallelWrites`).
+  - `chain` — run 1–8 steps sequentially; `{previous}` in a step task is replaced with
+    the previous step's bounded final text. Stops at the first failed step.
   - `background` — return as soon as the child starts; the result arrives later as a
-    custom message (default: `config.defaultMode === "async"`).
+    custom message (default: `config.defaultMode === "async"`). Single mode only.
   - `agentScope` — `user`, `project`, or `both` (default: configured `agentScope`).
   - `confirmProjectAgents` — project agents prompt by default; pass `false` only when the
     user already approved them.
-- `hc_subagent_control` — `list`, `wait`, `output`, `result`, `attach`, `interrupt`, `kill`.
-  `send` is intentionally absent until the M3 private pipe exists.
+- `hc_subagent_control` — `list`, `wait`, `output`, `result`, `attach`, `interrupt`, `kill`,
+  `send`. `send` requires the child-side private pipe and appends a new turn; `wait`
+  defaults to true. A blocked child is rejected, never force-answered.
+
+`tasks`/`chain` summaries stay compact; full per-task results are in
+`details.results[]`. Every child still gets its own terminal, session, and run record.
 
 Outside an `hc` terminal the tools are not registered; `/hc-subagents` prints setup
 instructions instead.
+
+## Private follow-up pipe
+
+Children are started with the package's `child.ts` extension (`-e`) and a per-child
+Unix socket under `/tmp` (`PI_HC_PIPE`, mode `0600`). `hc_subagent_control send` (and the
+intertool `send` method) delivers follow-ups through that socket using
+`pi.sendUserMessage` with `deliverAs: "steer"` while streaming or a new turn while idle.
+The PTY remains a human channel: the extension never types into it, never sends `force`,
+and never answers a permission dialog. The child labels its terminal
+`pi-hc-session=<session file>` and does not register `hc_subagent*` tools.
 
 ## Async delivery
 
@@ -126,9 +143,10 @@ if (!service) {
 }
 ```
 
-Service methods: `list`, `get`, `spawn`, `wait`, `cancel`, `subscribe`, and
+Service methods: `list`, `get`, `spawn`, `wait`, `send`, `cancel`, `subscribe`, and
 `registerAgentSource`. `capabilities.features` never advertises an unimplemented
-feature (no `send` in M2).
+feature. `send` verifies that the child belongs to the current parent session and
+rejects blocked children.
 
 Events are emitted on `pi.events` and delivered to service subscribers:
 
@@ -173,10 +191,10 @@ npm run test:integration # isolated hc core; skipped when hc is unavailable
 npm run test:all
 ```
 
-M2 coverage includes notifier dedupe/queue/retry/batching, widget formatting and clear
-behavior, project-agent trust policy, event privacy and subscriber isolation, async
-background delivery against a fake child, intertool spawn/list/wait/cancel/idempotency,
-and resume isolation/retention with an injected clock.
+M3 coverage includes scheduler concurrency/write serialization, parallel partial
+failure, chain `{previous}` substitution and stop-on-failure, pipe framing/permissions/
+stale sockets/blocked/timeout/shutdown, child-extension delivery, and follow-up turn
+accounting against a fake pipe child.
 
 ## Safety invariants
 
@@ -193,5 +211,9 @@ and resume isolation/retention with an injected clock.
 - Reloading the extension tears down the previous session's monitors and kills the
   children it owned; background monitoring does not survive `/reload` or a session
   switch.
-- No Windows/remote `hc` support (M4), no parallel/chain/follow-up (M3).
-- `monitorAfterReturn` is accepted in config but not used until follow-up turns exist.
+- No Windows/remote `hc` support (M4). The private pipe is Unix-only until named pipes
+  and ConPTY are added.
+- A follow-up needs a child started with the current package's `child.ts`; restored
+  pre-M3/older children report `unavailable` instead of falling back to PTY input.
+- `monitorAfterReturn` is accepted in config but not used until a timeout keeps a
+  monitor alive.

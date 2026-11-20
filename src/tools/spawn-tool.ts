@@ -22,6 +22,7 @@ import { parseSessionWithRetry, type ParsedSessionFile } from "../child/session-
 import { abortChild, waitForChild } from "../child/wait-child.ts";
 import { describeHcError, toHcSubagentError } from "../core/error.ts";
 import type { SubagentRecord } from "../runtime/types.ts";
+import { updateCurrentTurns } from "../runtime/types.ts";
 import {
   type SubagentResultDetails,
   formatBlockedContent,
@@ -502,7 +503,10 @@ export function registerSpawnTool(
             state: "blocked",
             coreStatus: "blocked",
             lastScreen: screenTail,
-            turns: record.turns.map((turn) => ({ ...turn, state: "blocked" as const, blocked: { kind: kind ?? undefined, message: message ?? undefined } })),
+            turns: updateCurrentTurns(record, () => ({
+              state: "blocked" as const,
+              blocked: { kind: kind ?? undefined, message: message ?? undefined },
+            })),
           });
           await persistRunSummary(updated, {
             state: "blocked",
@@ -559,8 +563,7 @@ export function registerSpawnTool(
             settledAt: nowIso,
             sessionFile: sessionFileForOutcome ?? null,
             error: abort.killed ? "cancelled after abort (killed)" : "cancelled after abort",
-            turns: record.turns.map((turn) => ({
-              ...turn,
+            turns: updateCurrentTurns(record, () => ({
               state: "cancelled" as const,
               outcome: "aborted" as const,
               text,

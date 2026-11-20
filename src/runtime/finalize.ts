@@ -20,7 +20,7 @@ import {
 } from "./result-format.ts";
 import { buildResultJson, writeResultFile } from "./result-store.ts";
 import type { SubagentRecord, TurnOutcome } from "./types.ts";
-import { coreStatusOf } from "./types.ts";
+import { coreStatusOf, updateCurrentTurns } from "./types.ts";
 import type { ToolSession } from "../tools/session.ts";
 
 /** Serialize run.json writes per file so a late observation cannot win. */
@@ -117,8 +117,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
       turn: terminal.turn,
       settledAt: now,
       error,
-      turns: record.turns.map((turn) => ({
-        ...turn,
+      turns: updateCurrentTurns(record, () => ({
         state: "failed" as const,
         outcome: options.fallbackOutcome,
         error,
@@ -190,8 +189,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
     settledAt: now,
     sessionFile: parsed.sessionFile,
     error: parsed.error,
-    turns: record.turns.map((turn) => ({
-      ...turn,
+    turns: updateCurrentTurns(record, () => ({
       state:
         state === "completed" ? ("completed" as const) : state === "cancelled" ? ("cancelled" as const) : ("failed" as const),
       outcome,

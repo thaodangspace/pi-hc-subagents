@@ -7,16 +7,19 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { effectiveAgentTools, validateAgentForSpawn, type AgentDefinition } from "../agents/agents.ts";
 import { HcSubagentError } from "../core/error.ts";
 import { buildSystemFile, buildTaskFile } from "./child-prompt.ts";
 import type { RunPaths } from "./paths.ts";
 import { resolvePiInvocation } from "./pi-invocation.ts";
+import { pipeNameFor } from "./pipe-protocol.ts";
 
 export const MAX_TASK_BYTES = 256 * 1024;
 export const MAX_SYSTEM_BYTES = 128 * 1024;
 export const HC_TOOL_NAMES = ["hc_subagent", "hc_subagent_control"] as const;
+export const CHILD_ENTRY = fileURLToPath(new URL("../../child.ts", import.meta.url));
 
 /**
  * hc merges per-terminal env over the core environment, so omission alone
@@ -63,6 +66,8 @@ export interface SpawnPlan {
   trustFlag: boolean;
   taskContent: string;
   systemContent: string;
+  /** Private follow-up pipe name; also passed as PI_HC_PIPE. */
+  pipeName: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -178,6 +183,7 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
   }
 
   const { invocation } = resolveChildInvocation(env, input.piInvocation);
+  const pipeName = pipeNameFor(input.trust.parentCwd, input.paths.childId);
 
   const excludeTools = [
     ...new Set([...HC_TOOL_NAMES, ...(input.excludeTools ?? []), ...(input.agent.tools?.filter((tool) =>
@@ -202,6 +208,8 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
     "--exclude-tools",
     excludeTools.join(","),
     ...(input.agent.skills ?? []).flatMap((skill) => ["--skill", skill]),
+    "-e",
+    CHILD_ENTRY,
     ...(input.agent.extensions ?? []).flatMap((extension) => ["-e", extension]),
     "--append-system-prompt",
     input.paths.systemFile,
@@ -228,6 +236,7 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
       PI_HC_RUN_ID: input.paths.runId,
       PI_HC_CHILD_ID: input.paths.childId,
       PI_HC_PARENT_SESSION: input.parentSessionId,
+      PI_HC_PIPE: pipeName,
     }),
     labels,
     parent: input.parentTerminalId,
@@ -235,6 +244,7 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
     trustFlag,
     taskContent,
     systemContent,
+    pipeName,
   };
 }
 

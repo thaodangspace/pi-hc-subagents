@@ -1,8 +1,8 @@
 /**
  * `hc_subagent_control` — inspect and manage children owned by this parent.
  *
- * Milestone 1 exposes list/wait/output/result/attach/interrupt/kill. `send` is
- * intentionally absent until the private pipe transport exists.
+ * Milestone 3 adds `send` over the private child pipe. Screen output remains
+ * lossy and is never treated as the result.
  */
 import path from "node:path";
 
@@ -32,14 +32,17 @@ import { ChildStateMachine } from "../runtime/state-machine.ts";
 import { renderSubagentToolResult } from "../ui/renderers.ts";
 import type { SubagentRecord, SubagentState } from "../runtime/types.ts";
 import { finalizeFromSession } from "../runtime/finalize.ts";
+import { sendFollowUp } from "../runtime/follow-up.ts";
 import type { ToolSession } from "./session.ts";
 
 const ControlParams = Type.Object({
-  action: StringEnum(["list", "wait", "output", "result", "attach", "interrupt", "kill"] as const),
+  action: StringEnum(["list", "wait", "output", "result", "attach", "interrupt", "kill", "send"] as const),
   id: Type.Optional(Type.String({ description: "Child id, terminal address/name, or slug" })),
   timeoutMs: Type.Optional(Type.Number()),
   lines: Type.Optional(Type.Number({ description: "For output; default 60" })),
   includeFinished: Type.Optional(Type.Boolean({ description: "For list; default true" })),
+  message: Type.Optional(Type.String({ description: "For send; follow-up text delivered over the private pipe" })),
+  wait: Type.Optional(Type.Boolean({ description: "For send; wait for the new turn. Default true" })),
 });
 
 type ControlParamsType = Static<typeof ControlParams>;
@@ -578,6 +581,103 @@ async function killAction(
   };
 }
 
+async function sendAction(
+  session: ToolSession,
+  record: SubagentRecord,
+  params: ControlParamsType,
+  signal: AbortSignal | undefined,
+): Promise<AgentToolResult<SubagentResultDetails>> {
+  if (typeof params.message !== "string" || params.message.trim().length === 0) {
+    return errorResult("send requires a non-empty message", "validation", detailsFor(record, { code: "validation" }));
+  }
+  try {
+    const outcome = await sendFollowUp(session, record, {
+      message: params.message,
+      wait: params.wait ?? true,
+      ...(params.timeoutMs === undefined ? {} : { timeoutMs: params.timeoutMs }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+
+    if (outcome.finalized) {
+      session.notifier?.markDelivered(outcome.record.childId, outcome.record.turn, "result");
+      return outcome.finalized.result;
+    }
+
+    if (outcome.blocked) {
+      const content = formatBlockedContent({
+        agent: outcome.record.agent,
+        terminal: outcome.record.terminal,
+        terminalName: outcome.record.terminalName,
+        kind: outcome.blocked.kind,
+        message: outcome.blocked.message,
+        screenTail: outcome.blocked.screenTail,
+        durationMs: durationOf(outcome.record),
+      });
+      return {
+        content: [{ type: "text", text: content }],
+        details: detailsFor(outcome.record, {
+          state: "blocked",
+          outcome: "blocked",
+          blocked: outcome.blocked,
+        }),
+        isError: false,
+      };
+    }
+
+    if (outcome.pending === "timeout") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: formatPendingContent({
+              agent: outcome.record.agent,
+              state: "working",
+              coreStatus: outcome.record.coreStatus,
+              terminal: outcome.record.terminal,
+              terminalName: outcome.record.terminalName,
+              sessionFile: outcome.record.sessionFile,
+              durationMs: durationOf(outcome.record),
+              reason: "wait_timeout",
+            }),
+          },
+        ],
+        details: detailsFor(outcome.record, { state: "working", outcome: "timeout" }),
+        isError: false,
+      };
+    }
+
+    if (outcome.pending === "cancelled") {
+      return {
+        content: [{ type: "text", text: `follow-up was delivered to ${record.slug}, but the wait was cancelled.` }],
+        details: detailsFor(outcome.record, { state: "working", outcome: null, code: "aborted" }),
+        isError: false,
+      };
+    }
+
+    const hint =
+      outcome.record.background && session.monitors
+        ? "The result will be delivered as a custom message when the new turn settles."
+        : "Use hc_subagent_control wait or result to retrieve the new turn.";
+    return {
+      content: [
+        {
+          type: "text",
+          text: [
+            `sent follow-up to ${outcome.record.slug} (${outcome.record.terminal})`,
+            `turn: ${outcome.baselineTurn} -> new turn appended`,
+            hint,
+          ].join("\n"),
+        },
+      ],
+      details: detailsFor(outcome.record, { state: "working", outcome: null }),
+    };
+  } catch (error) {
+    const normalized = toHcSubagentError(error);
+    const hint = normalized.hint ? `\n${normalized.hint}` : "";
+    return errorResult(`${describeHcError(error)}${hint}`, normalized.code, detailsFor(record, { code: normalized.code }));
+  }
+}
+
 export interface ControlToolOptions {
   exposure?: "direct" | "model-only";
 }
@@ -592,12 +692,14 @@ export function registerControlTool(
     ...(options.exposure === "model-only" ? { exposure: "model-only" as const } : {}),
     label: "HC Subagent Control",
     description:
-      "Inspect and manage hc subagents owned by this session: list, wait, output, result, attach, interrupt, kill.",
-    promptSnippet: "Inspect or manage hc subagents (list, wait, output, result, attach, interrupt, kill).",
+      "Inspect and manage hc subagents owned by this session: list, wait, output, result, attach, interrupt, kill, send.",
+    promptSnippet:
+      "Inspect or manage hc subagents (list, wait, output, result, attach, interrupt, kill, send).",
     promptGuidelines: [
       "Use hc_subagent_control wait or result instead of sleeping or polling for a subagent.",
       "Use hc_subagent_control output only for debugging; screen output is lossy and never the authoritative result.",
       "Never answer a blocked subagent's dialog; use hc_subagent_control attach to tell the user how to attach.",
+      "Use hc_subagent_control send for a follow-up; it appends a new turn and never types into the terminal.",
     ],
     parameters: ControlParams,
     renderResult(result, { expanded }, theme) {
@@ -646,6 +748,8 @@ export function registerControlTool(
           return interruptAction(session, record);
         case "kill":
           return killAction(session, record);
+        case "send":
+          return sendAction(session, record, params, signal);
         default:
           return errorResult(`unsupported action ${params.action}`, "validation", unknownDetails());
       }

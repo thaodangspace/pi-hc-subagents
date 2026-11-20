@@ -189,7 +189,7 @@ test("service install/remove and ready/shutdown signaling", { skip: !available }
   try {
     const target: Record<symbol, unknown> = {};
     installService(harness.service, target);
-    assert.equal(harness.service.capabilities.features.includes("send" as never), false);
+    assert.equal(harness.service.capabilities.features.includes("send" as never), true);
     removeService(target);
     // The service itself stays usable through the harness reference.
     assert.equal(harness.service.version, 1);

@@ -8,6 +8,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { startChildPipeServer, type ChildPipeServer } from "../../src/child/pipe-server.ts";
+
 type Mode =
   | "success"
   | "error"
@@ -20,7 +22,9 @@ type Mode =
   | "tooluse"
   | "silent"
   | "exit-early"
-  | "task";
+  | "task"
+  | "pipe"
+  | "pipe-streaming";
 
 function parseArgs(argv: string[]): { sessionId: string; sessionDir: string; name: string; taskFile: string | null } {
   let sessionId = "";
@@ -58,6 +62,8 @@ function mode(): Mode {
     case "silent":
     case "exit-early":
     case "task":
+    case "pipe":
+    case "pipe-streaming":
       return value;
     default:
       return "success";
@@ -82,10 +88,12 @@ function writeSession(options: {
   stopReason: "stop" | "error" | "length" | "aborted" | "toolUse";
   text: string;
   finalAfterMs?: number;
+  followUp?: string;
+  existingFile?: string;
 }): string {
   mkdirSync(options.sessionDir, { recursive: true, mode: 0o700 });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const file = path.join(options.sessionDir, `${stamp}_${options.sessionId}.jsonl`);
+  const file = options.existingFile ?? path.join(options.sessionDir, `${stamp}_${options.sessionId}.jsonl`);
   const iso = new Date().toISOString();
   const now = Date.now();
   const entries: unknown[] = [
@@ -123,6 +131,20 @@ function writeSession(options: {
     },
   });
   entries.push(assistant("ast00001", "usr00001", options.stopReason, options.text, 2));
+  let assistantParent = "ast00001";
+  if (options.followUp !== undefined) {
+    entries.push({
+      type: "message",
+      id: "usr00002",
+      parentId: "usr00001",
+      timestamp: iso,
+      message: { role: "user", content: options.followUp, timestamp: now + 3 },
+    });
+    assistantParent = "usr00002";
+  }
+  if (options.followUp !== undefined) {
+    entries.push(assistant("ast00002", assistantParent, options.stopReason, options.text, 4));
+  }
   if (options.stopReason === "toolUse" && options.finalAfterMs !== undefined) {
     entries.push(assistant("ast00002", "ast00001", "stop", options.text || "final after tool use", 100));
   }
@@ -134,8 +156,66 @@ const args = parseArgs(process.argv.slice(2));
 const selectedMode = mode();
 const keepAlive = setInterval(() => {}, 1 << 30);
 
-process.on("SIGTERM", () => process.exit(0));
-process.on("SIGINT", () => process.exit(0));
+let pipeServer: ChildPipeServer | null = null;
+let fakeSessionFile: string | null = null;
+let lastPipeText = "Fake pipe result.";
+let pipeTurns = 0;
+
+function shutdown(code = 0): void {
+  void pipeServer?.stop().finally(() => process.exit(code));
+  setTimeout(() => process.exit(code), 300).unref?.();
+}
+
+process.on("SIGTERM", () => shutdown(0));
+process.on("SIGINT", () => shutdown(0));
+
+async function startFakePipe(): Promise<void> {
+  const name = process.env.PI_HC_PIPE ?? "";
+  if (!name) {
+    emitStatus("error", "PI_HC_PIPE is missing");
+    return;
+  }
+  pipeServer = await startChildPipeServer({
+    name,
+    handlers: {
+      ping: () => ({ turn: pipeTurns }),
+      prompt: async (text) => {
+        lastPipeText = `Fake prompt result: ${actualTask(text)}`;
+        return { turn: pipeTurns };
+      },
+      followUp: async (text) => {
+        pipeTurns++;
+        lastPipeText = `Fake follow-up result: ${actualTask(text)}`;
+        fakeSessionFile = writeSession({
+          sessionDir: args.sessionDir,
+          sessionId: args.sessionId,
+          taskText: actualTask(taskText),
+          stopReason: "stop",
+          text: lastPipeText,
+          followUp: actualTask(text),
+          ...(fakeSessionFile === null ? {} : { existingFile: fakeSessionFile }),
+        });
+        emitStatus("working", args.name || "fake child");
+        setTimeout(() => emitStatus("done", args.name || "fake child"), 100);
+        return { turn: pipeTurns };
+      },
+      interrupt: async () => {
+        emitStatus("idle", args.name || "fake child");
+        return { turn: pipeTurns };
+      },
+      shutdown: async () => {
+        setTimeout(() => shutdown(0), 50);
+        return {};
+      },
+      result: async () => ({
+        text: lastPipeText,
+        state: "completed",
+        outcome: "stop",
+        sessionFile: fakeSessionFile,
+      }),
+    },
+  });
+}
 
 if (args.taskFile) {
   const runDir = path.dirname(args.taskFile);
@@ -288,6 +368,29 @@ switch (selectedMode) {
   case "exit-early":
     emitStatus("working", args.name || "fake child");
     setTimeout(() => process.exit(3), 150);
+    break;
+  case "pipe":
+    emitStatus("working", args.name || "fake child");
+    void startFakePipe()
+      .then(() => {
+        setTimeout(() => {
+          fakeSessionFile = writeSession({
+            sessionDir: args.sessionDir,
+            sessionId: args.sessionId,
+            taskText: actualTask(taskText),
+            stopReason: "stop",
+            text: "Fake initial result.",
+          });
+          setTimeout(() => emitStatus("done", args.name || "fake child"), 100);
+        }, 150);
+      })
+      .catch(() => emitStatus("error", "fake pipe failed"));
+    finishAndStayAlive();
+    break;
+  case "pipe-streaming":
+    emitStatus("working", args.name || "fake child");
+    void startFakePipe().catch(() => emitStatus("error", "fake pipe failed"));
+    finishAndStayAlive();
     break;
   case "task": {
     const task = actualTask(taskText);

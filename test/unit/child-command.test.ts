@@ -5,7 +5,7 @@ import test from "node:test";
 
 import type { AgentDefinition } from "../../src/agents/agents.ts";
 import { HcSubagentError } from "../../src/core/error.ts";
-import { buildSpawnPlan, isCwdInside, MAX_TASK_BYTES } from "../../src/child/child-command.ts";
+import { CHILD_ENTRY, buildSpawnPlan, isCwdInside, MAX_TASK_BYTES } from "../../src/child/child-command.ts";
 import { buildSystemFile, buildTaskFile, DELEGATION_CONTRACT } from "../../src/child/child-prompt.ts";
 import { createRunPaths, sanitizeSessionName, sanitizeTerminalName } from "../../src/child/paths.ts";
 import { getPiInvocation } from "../../src/child/pi-invocation.ts";
@@ -108,6 +108,8 @@ test("argv order is exact and @task.md is last", async () => {
       "--skill",
       "skill-one",
       "-e",
+      CHILD_ENTRY,
+      "-e",
       "./ext-one.ts",
       "--append-system-prompt",
       paths.systemFile,
@@ -201,11 +203,12 @@ test("child environment filters hc and stale session metadata but keeps credenti
       "PI_PROVIDER",
       "PI_MODEL",
       "PI_REASONING_LEVEL",
-      "PI_HC_PIPE",
     ]) {
       const value = plan.env[removed];
       assert.ok(value === undefined || value === "", `${removed} should be cleared`);
     }
+    assert.match(plan.pipeName, /^pi-hc-[a-f0-9]{16}-/);
+    assert.equal(plan.env.PI_HC_PIPE, plan.pipeName);
     assert.equal(plan.env.PI_HC_SUBAGENT, "1");
     assert.equal(plan.env.PI_HC_RUN_ID, "20261120T034008Z-a1b2c3");
     assert.equal(plan.env.PI_HC_CHILD_ID, CHILD_ID);

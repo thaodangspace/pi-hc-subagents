@@ -134,16 +134,40 @@ test("service installs and removes the v1 symbol", () => {
   assert.equal(serviceFrom(target), undefined);
 });
 
-test("capabilities advertise M2 features and omit send", () => {
+test("capabilities advertise the M3 feature set", () => {
   const service = new IntertoolServiceV1({
     session: fakeSession(),
     exposeService: true,
     emitEvents: true,
     includeTaskPreview: false,
   });
-  assert.deepEqual(service.capabilities.features, ["spawn", "wait", "cancel", "events", "project-agents"]);
+  assert.deepEqual(service.capabilities.features, ["spawn", "wait", "send", "cancel", "events", "project-agents"]);
   assert.equal(service.capabilities.backend, "hc-local");
   assert.equal(service.capabilities.coreVersion, "0.1.21");
+});
+
+test("service send rejects a blocked child without touching the pipe", async () => {
+  const registry = new Registry();
+  registry.create(record({ state: "blocked", coreStatus: "blocked" }));
+  const session = fakeSession(registry);
+  (session.runtime as unknown as { core: unknown }).core = {
+    tryGet: async () => ({
+      address: "t12",
+      state: "live",
+      status: { state: "blocked", kind: "permission" },
+      turn: 1,
+    }),
+  };
+  const service = new IntertoolServiceV1({
+    session,
+    exposeService: true,
+    emitEvents: true,
+    includeTaskPreview: false,
+  });
+  await assert.rejects(() => service.send("child-1", "please continue"), (error: unknown) => {
+    assert.equal((error as { code?: string }).code, "blocked");
+    return true;
+  });
 });
 
 test("get and list only expose this parent session's children", async () => {

@@ -17,8 +17,10 @@ import {
   type SubagentResult,
   cancelRecord,
   resolveOwnedRecord,
+  toSubagentResult,
   waitForRecord,
 } from "../runtime/run-ops.ts";
+import { sendFollowUp } from "../runtime/follow-up.ts";
 import { startBackgroundRun } from "../runtime/run-background.ts";
 import type { SubagentRecord, SubagentState, TurnOutcome } from "../runtime/types.ts";
 
@@ -56,6 +58,15 @@ export interface SpawnRequest {
 
 export type SubagentView = Readonly<SubagentRecord>;
 
+export interface SendOutcome {
+  childId: string;
+  turn: number;
+  accepted: boolean;
+  state: SubagentState;
+  outcome?: TurnOutcome | "blocked" | "pending";
+  result?: SubagentResult;
+}
+
 export interface HcSubagentsService {
   readonly version: 1;
   readonly capabilities: HcSubagentsCapabilities;
@@ -63,6 +74,7 @@ export interface HcSubagentsService {
   get(id: string): SubagentView | undefined;
   spawn(request: SpawnRequest): Promise<SubagentView>;
   wait(id: string, opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<SubagentResult>;
+  send(id: string, message: string, opts?: { wait?: boolean; timeoutMs?: number; signal?: AbortSignal }): Promise<SendOutcome>;
   cancel(id: string, opts?: { force?: boolean }): Promise<void>;
   subscribe(listener: SubagentEventListener): () => void;
   registerAgentSource?(source: AgentSource): () => void;
@@ -121,7 +133,7 @@ export class IntertoolServiceV1 implements HcSubagentsService {
       piVersion: options.piVersion ?? process.env.PI_VERSION ?? "unknown",
       platforms: [process.platform],
       maxConcurrency: options.session.runtime.config.maxConcurrency,
-      features: ["spawn", "wait", "cancel", "events", "project-agents"],
+      features: ["spawn", "wait", "send", "cancel", "events", "project-agents"],
     };
   }
 
@@ -205,6 +217,51 @@ export class IntertoolServiceV1 implements HcSubagentsService {
       this.#session.notifier?.markDelivered(record.childId, record.turn, "result");
     }
     return result;
+  }
+
+  async send(
+    id: string,
+    message: string,
+    opts: { wait?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<SendOutcome> {
+    this.#assertAlive();
+    if (typeof message !== "string" || message.trim().length === 0) {
+      throw new HcSubagentError("validation", "message must not be empty");
+    }
+    const record = resolveOwnedRecord(this.#session, id);
+    const outcome = await sendFollowUp(this.#session, record, {
+      message,
+      wait: opts.wait ?? true,
+      ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
+      ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+    });
+    if (outcome.finalized) {
+      this.#session.notifier?.markDelivered(outcome.record.childId, outcome.record.turn, "result");
+      return {
+        childId: outcome.record.childId,
+        turn: outcome.record.turn,
+        accepted: true,
+        state: outcome.finalized.state,
+        outcome: outcome.finalized.outcome,
+        result: toSubagentResult(outcome.record, outcome.finalized),
+      };
+    }
+    if (outcome.blocked) {
+      return {
+        childId: outcome.record.childId,
+        turn: outcome.record.turn,
+        accepted: true,
+        state: "blocked",
+        outcome: "blocked",
+      };
+    }
+    return {
+      childId: outcome.record.childId,
+      turn: outcome.record.turn,
+      accepted: true,
+      state: outcome.record.state,
+      outcome: "pending",
+    };
   }
 
   async cancel(id: string, opts: { force?: boolean } = {}): Promise<void> {

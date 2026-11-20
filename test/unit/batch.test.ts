@@ -96,5 +96,5 @@ test("skipped chain steps are reported as skipped", () => {
     { index: 1, agent: "worker", childId: "", runId: "", cwd: "/", terminal: "", terminalName: "", state: "cancelled", outcome: "aborted", sessionFile: null, resultFile: null, turn: 0, durationMs: 0, skipped: true },
   ]);
   assert.match(content, /1 skipped/);
-  assert.match(content, /not run because an earlier step failed/);
+  assert.match(content, /not run because an earlier step did not complete/);
 });

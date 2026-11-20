@@ -31,6 +31,7 @@ export interface RunMetadata {
   resultFile: string;
   sessionDir: string;
   sessionId: string;
+  pipeName?: string;
   terminalName: string;
   origin: string;
   slug: string;
@@ -125,6 +126,7 @@ export function createRunMetadata(plan: SpawnPlan, options: SpawnChildOptions = 
     resultFile: plan.paths.resultFile,
     sessionDir: plan.paths.sessionDir,
     sessionId: plan.paths.childId,
+    pipeName: plan.pipeName,
     terminalName: plan.paths.terminalName,
     origin: options.origin ?? "tool",
     slug: plan.paths.slug,
@@ -242,6 +244,7 @@ export function createSubagentRecord(
     terminalName: terminal.name ?? plan.paths.terminalName,
     sessionId: plan.paths.childId,
     sessionFile: null,
+    pipeName: plan.pipeName,
     runDir: plan.paths.runDir,
     resultFile: plan.paths.resultFile,
     ...(plan.agent.model === undefined ? {} : { model: plan.agent.model }),

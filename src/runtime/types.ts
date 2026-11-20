@@ -78,6 +78,8 @@ export interface SubagentRecord {
   terminalName: string;
   sessionId: string;
   sessionFile: string | null;
+  /** Private follow-up pipe name; absent for restored runs and pre-M3 children. */
+  pipeName?: string;
   /** Stable run-directory paths; internal, used by control/result retrieval. */
   runDir?: string;
   resultFile?: string;
@@ -117,6 +119,23 @@ export function isTerminalRecordState(record: SubagentRecord): boolean {
     record.state === "cancelled" ||
     record.terminalState === "finished"
   );
+}
+
+/**
+ * Apply a patch to the current (last/running/blocked) turn only. A follow-up
+ * appends a new turn; earlier settled turns must stay immutable.
+ */
+export function updateCurrentTurns(
+  record: SubagentRecord,
+  patch: (turn: TurnRecord) => Partial<TurnRecord>,
+): TurnRecord[] {
+  const lastIndex = record.turns.length - 1;
+  return record.turns.map((turn, index) => {
+    if (index === lastIndex || turn.state === "running" || turn.state === "blocked") {
+      return { ...turn, ...patch(turn) };
+    }
+    return turn;
+  });
 }
 
 export function emptyUsage(): Usage {
