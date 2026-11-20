@@ -18,6 +18,9 @@ export type HcSubagentErrorCode =
   | "aborted"
   | "validation"
   | "unsupported"
+  | "unsupported_backend"
+  | "provider_failed"
+  | "adapter_failed"
   | "ambiguous"
   | "not_settled"
   | "project_agent_not_trusted"
@@ -62,6 +65,7 @@ export class HcSubagentError extends Error {
       this.code === "ambiguous" ||
       this.code === "validation" ||
       this.code === "unsupported" ||
+      this.code === "unsupported_backend" ||
       this.code === "project_agent_not_trusted"
     );
   }

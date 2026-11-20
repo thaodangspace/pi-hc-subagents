@@ -44,3 +44,44 @@ jobs:
           fi
       - if: steps.hc.outputs.available == 'true'
         run: npm run test:integration
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm pack
+      - name: Install the tarball in a scratch directory and load the extension
+        run: |
+          set -euo pipefail
+          root="$PWD"
+          scratch="$(mktemp -d)"
+          cd "$scratch"
+          npm init -y >/dev/null
+          npm install "$root"/pi-hc-subagents-*.tgz --ignore-scripts
+          # Node refuses to strip TypeScript under node_modules, while pi loads
+          # extensions with its own TypeScript-aware loader. Copy the installed
+          # files one level up so this smoke test can still exercise the tarball
+          # contents with Node's type stripping.
+          cp -R node_modules/pi-hc-subagents ./packed-extension
+          node --experimental-strip-types --input-type=module -e '
+            const { default: extension } = await import("./packed-extension/index.ts");
+            const registrations = [];
+            const pi = {
+              on: (name) => { registrations.push(name); return () => {}; },
+              registerTool: (definition) => registrations.push(definition.name),
+              registerCommand: (name) => registrations.push(name),
+              registerMessageRenderer: () => {},
+              appendEntry: () => {},
+              sendMessage: () => {},
+            };
+            extension(pi);
+            if (!registrations.includes("hc-subagents") || !registrations.includes("session_start")) {
+              throw new Error("packed extension did not register its command and lifecycle handler");
+            }
+            console.log("packed extension loaded");
+          '

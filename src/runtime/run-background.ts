@@ -27,6 +27,13 @@ import { ChildStateMachine } from "./state-machine.ts";
 import { defaultMonitorHooks } from "./run-hooks.ts";
 import type { SubagentRecord } from "./types.ts";
 
+export interface PreparedBackgroundRun {
+  agent: AgentDefinition;
+  cwd: string;
+  /** Scheduler release owned by the run; transferred to the monitor on success. */
+  release: () => void;
+}
+
 export interface StartBackgroundRunRequest {
   agentName: string;
   task: string;
@@ -40,6 +47,14 @@ export interface StartBackgroundRunRequest {
   /** Explicit pre-approval for trusted project agents. */
   allowProjectAgents: boolean;
   promptProjectAgent?: (agent: AgentDefinition) => Promise<boolean>;
+  /** Provider id recorded on the run; defaults to `hc-local`. */
+  provider?: string;
+  /**
+   * Validation already performed through a `ProviderHost`. When present the
+   * local provider skips discovery, trust prompts, and scheduler acquisition
+   * so a provider cannot double-acquire or bypass the host.
+   */
+  prepared?: PreparedBackgroundRun;
   signal?: AbortSignal;
 }
 
@@ -67,27 +82,37 @@ export async function startBackgroundRun(
     throw new HcSubagentError("unavailable", "background monitors are not initialized");
   }
 
-  const discovery = await discoverAgents({
-    cwd: request.parentCwd,
-    scope: request.agentScope ?? runtime.config.agentScope,
-    trusted: request.trusted,
-    agentDir: runtime.agentDir,
-    packageDir: runtime.agentDirs.package,
-  });
-  const agent = applyOverrides(resolveAgent(discovery, request.agentName), request);
-  validateAgentForSpawn(agent, { trusted: request.trusted });
-  await authorizeProjectAgent(agent, {
-    trusted: request.trusted,
-    allowWithoutPrompt: request.allowProjectAgents,
-    hasUI: request.promptProjectAgent !== undefined,
-    ...(request.promptProjectAgent === undefined ? {} : { confirm: request.promptProjectAgent }),
-  });
+  let agent: AgentDefinition;
+  let cwd: string;
+  let releaseSlot: (() => void) | null;
+  if (request.prepared) {
+    agent = request.prepared.agent;
+    cwd = request.prepared.cwd;
+    releaseSlot = request.prepared.release;
+    // Defense in depth: the host validated this, but a buggy provider must not
+    // smuggle an untrusted project agent through the local spawn path.
+    validateAgentForSpawn(agent, { trusted: request.trusted });
+  } else {
+    const discovery = await discoverAgents({
+      cwd: request.parentCwd,
+      scope: request.agentScope ?? runtime.config.agentScope,
+      trusted: request.trusted,
+      agentDir: runtime.agentDir,
+      packageDir: runtime.agentDirs.package,
+    });
+    agent = applyOverrides(resolveAgent(discovery, request.agentName), request);
+    validateAgentForSpawn(agent, { trusted: request.trusted });
+    await authorizeProjectAgent(agent, {
+      trusted: request.trusted,
+      allowWithoutPrompt: request.allowProjectAgents,
+      hasUI: request.promptProjectAgent !== undefined,
+      ...(request.promptProjectAgent === undefined ? {} : { confirm: request.promptProjectAgent }),
+    });
 
-  const requestedCwd = request.cwd ?? agent.cwd ?? request.parentCwd;
-  const cwd = path.resolve(request.parentCwd, requestedCwd);
-
-  const release = await scheduler.acquire({ write: agent.access === "write", cwd, signal: request.signal });
-  let releaseSlot: (() => void) | null = release;
+    const requestedCwd = request.cwd ?? agent.cwd ?? request.parentCwd;
+    cwd = path.resolve(request.parentCwd, requestedCwd);
+    releaseSlot = await scheduler.acquire({ write: agent.access === "write", cwd, signal: request.signal });
+  }
   let locateController: AbortController | null = null;
   try {
     const paths = createRunPaths({
@@ -111,6 +136,7 @@ export async function startBackgroundRun(
     const spawned = await spawnChild(runtime.core, plan, {
       origin: request.origin,
       background: true,
+      provider: request.provider ?? "hc-local",
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
 
@@ -121,6 +147,7 @@ export async function startBackgroundRun(
         background: true,
         now: () => new Date(),
         turnStartedAtMs,
+        provider: request.provider ?? "hc-local",
       }),
     );
 

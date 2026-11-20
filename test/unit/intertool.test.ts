@@ -141,7 +141,16 @@ test("capabilities advertise the M3 feature set", () => {
     emitEvents: true,
     includeTaskPreview: false,
   });
-  assert.deepEqual(service.capabilities.features, ["spawn", "wait", "send", "cancel", "events", "project-agents"]);
+  assert.deepEqual(service.capabilities.features, [
+    "spawn",
+    "wait",
+    "send",
+    "cancel",
+    "events",
+    "project-agents",
+    "providers",
+    "result-adapters",
+  ]);
   assert.equal(service.capabilities.backend, "hc-local");
   assert.equal(service.capabilities.coreVersion, "0.1.21");
 });

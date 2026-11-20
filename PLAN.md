@@ -664,3 +664,23 @@ Trước khi implement, cần chốt:
   - `github.com/boadij/pi-herdsman` (Apache-2.0)
   - `github.com/modem-dev/pi-herdr-subagents`
 - Local PoC: hc 0.1.21 + pi 1.5.2, isolated `HC_SESSION` (`/tmp/pi-hc-poc`).
+
+---
+
+## 15. Implementation status (phase 15)
+
+Phases 1–15 are implemented. The release candidate adds the M3+ extension points that
+were designed in §3 and §10:
+
+- `registerProvider` / `registerResultAdapter` on intertool service v1.
+- Built-in `HcLocalProvider` and `PiSessionResultAdapter` (result.json first, else session
+  JSONL; never screen scraping).
+- `backend`-based provider selection, `unsupported_backend` for unknown backends, and
+  failure containment that marks a run failed instead of crashing the parent.
+- Provider validation remains host-mediated: agent discovery, project trust/confirmation,
+  cwd checks, and scheduler admission all happen before spawn.
+- Release hardening: security tests (redaction, file modes, force prevention), a package
+  install smoke job in CI, `AGENTS.md`, and refreshed README/SPEC/PLAN documentation.
+
+Windows named pipes/ConPTY, remote `hc` machines, worktree isolation, and nested
+orchestration remain Milestone 4 (not part of this release).

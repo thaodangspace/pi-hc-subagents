@@ -9,15 +9,15 @@ source of the final result.
 
 ## Status
 
-Milestones 1–3 are implemented (phases 1–14 of the implementation plan):
-parallel `tasks`, sequential `chain`, private-pipe follow-ups with `send`, plus the
-notifier queue, status widget, project agents with trust/confirmation, the intertool
-service v1, and run persistence, resume reconciliation, and retention.
+Phases 1–15 of the implementation plan are implemented: synchronous and background
+delegation, parallel `tasks`, sequential `chain`, private-pipe follow-ups with `send`,
+the notifier queue, status widget, project agents with trust/confirmation, the intertool
+service v1, run persistence/recovery/retention, provider and result-adapter extension
+points, and the release hardening checks.
 
-Phase 15 (providers/result adapters and release hardening) is not implemented yet.
-
-See [`SPEC.md`](./SPEC.md) for the contract and [`PLAN.md`](./PLAN.md) for the research
-and design record.
+Release candidate: `pi-hc-subagents` 0.2.0-rc.1. See [`SPEC.md`](./SPEC.md) for the contract,
+[`PLAN.md`](./PLAN.md) for the research record, and [`AGENTS.md`](./AGENTS.md) for the
+module map and invariants.
 
 ## Requirements
 
@@ -143,10 +143,10 @@ if (!service) {
 }
 ```
 
-Service methods: `list`, `get`, `spawn`, `wait`, `send`, `cancel`, `subscribe`, and
-`registerAgentSource`. `capabilities.features` never advertises an unimplemented
-feature. `send` verifies that the child belongs to the current parent session and
-rejects blocked children.
+Service methods: `list`, `get`, `spawn`, `wait`, `send`, `cancel`, `subscribe`,
+`registerAgentSource`, `registerProvider`, and `registerResultAdapter`.
+`capabilities.features` never advertises an unimplemented feature. `send` verifies that
+the child belongs to the current parent session and rejects blocked children.
 
 Events are emitted on `pi.events` and delivered to service subscribers:
 
@@ -168,6 +168,61 @@ should call `list()` to reconcile.
 
 `spawn` accepts `origin` (recorded in `run.json`) and `clientRequestId` (idempotency key
 per origin, cached for five minutes). Reusing an id with different input is rejected.
+
+## Providers and result adapters
+
+The intertool service exposes two extension points for new backends. Registration is
+trusted in-process code, so review any provider/adapter you load; it expands the attack
+surface and must not bypass `ProviderHost` validation.
+
+```ts
+const service = (globalThis as any)[Symbol.for("pi-hc-subagents.service.v1")];
+const offProvider = service.registerProvider({
+  id: "my-backend",
+  canHandle: (request) => request.backend === "my-backend",
+  async spawn(request, host) {
+    const agent = await host.resolveAgent(request.agent, request.agentScope);
+    await host.assertProjectTrust(agent);            // trust + confirmation policy
+    const cwd = host.resolveCwd(request.cwd ?? agent.cwd);
+    const release = await host.acquireConcurrencySlot({
+      write: agent.access === "write",
+      cwd,
+      signal: request.signal,
+    });
+    try {
+      // The returned child owns the slot and must call release() exactly once on
+      // settle/cancel; release here only when start fails.
+      return await myBackend.start(request, agent, cwd, release);
+    } catch (error) {
+      release();
+      throw error;
+    }
+  },
+});
+
+const offAdapter = service.registerResultAdapter({
+  id: "my-result",
+  canHandle: ({ provider }) => provider === "my-backend",
+  async read({ childId, runId, terminal }) {
+    return { childId, runId, terminal, state: "completed", outcome: "stop", text };
+  },
+});
+```
+
+Selection rules:
+
+- Omitted `backend` (and `backend: "hc-local"`) selects the built-in local provider.
+- The first registered provider whose `canHandle` returns true wins; an unknown backend
+  fails with `unsupported_backend`.
+- Custom result adapters run before the built-in `PiSessionResultAdapter` fallback.
+- A throwing provider/adapter is contained: the service marks the run failed and returns
+  a structured failure instead of crashing the parent.
+- Providers still go through the same agent discovery, project trust/confirmation,
+  concurrency, cwd validation, and run recording rules as the tools.
+
+At startup the extension registers `HcLocalProvider` and `PiSessionResultAdapter`.
+`registerProvider`/`registerResultAdapter` return unregister functions; duplicate ids are
+rejected.
 
 ## Persistence, resume, and retention
 
@@ -194,7 +249,9 @@ npm run test:all
 M3 coverage includes scheduler concurrency/write serialization, parallel partial
 failure, chain `{previous}` substitution and stop-on-failure, pipe framing/permissions/
 stale sockets/blocked/timeout/shutdown, child-extension delivery, and follow-up turn
-accounting against a fake pipe child.
+accounting against a fake pipe child. Phase 15 adds provider/adapter registration and
+failure containment, result-adapter selection, the `PiSessionResultAdapter`, and security
+checks for redaction, file modes, and force prevention.
 
 ## Safety invariants
 
@@ -204,7 +261,21 @@ accounting against a fake pipe child.
 - Spawns use argv, never a shell line; task/system files are `0600`, run dirs `0700`.
 - The intertool service is in-process only and applies the same trust and concurrency
   rules as the tools.
+- Provider and result-adapter registration is trusted code; review it before loading and
+  require it to use `ProviderHost` validation.
 - Integration tests use an isolated `HC_SESSION` and scratch XDG paths.
+
+## Packaging and release checks
+
+```bash
+npm pack --dry-run            # inspect the published file list
+npm pack                     # produce pi-hc-subagents-0.2.0-rc.1.tgz
+npm test && npm run test:contract && npm run test:integration
+```
+
+CI runs typecheck, unit tests, and the pinned hc contract test on macOS and Linux (Node
+22 and 24), and integration tests on Linux when `hc` is available. The package loads via
+`pi.events`/`session_start`; there is no build step (TypeScript is loaded directly).
 
 ## Limitations
 
@@ -212,7 +283,8 @@ accounting against a fake pipe child.
   children it owned; background monitoring does not survive `/reload` or a session
   switch.
 - No Windows/remote `hc` support (M4). The private pipe is Unix-only until named pipes
-  and ConPTY are added.
+  and ConPTY are added, and the built-in provider is local-only. Custom providers can be
+  registered through the intertool service, but remote `hc` transport is not shipped.
 - A follow-up needs a child started with the current package's `child.ts`; restored
   pre-M3/older children report `unavailable` instead of falling back to PTY input.
 - `monitorAfterReturn` is accepted in config but not used until a timeout keeps a

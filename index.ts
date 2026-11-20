@@ -26,6 +26,9 @@ import {
 import { HcSubagentsWidget } from "./src/ui/widget.ts";
 import { registerHcSubagentsCommand } from "./src/ui/command.ts";
 import { registerHcSubagentsRenderers } from "./src/ui/renderers.ts";
+import { PiSessionResultAdapter } from "./src/child/pi-result-adapter.ts";
+import { ProviderRegistry, ResultAdapterRegistry } from "./src/intertool/adapters.ts";
+import { HcLocalProvider } from "./src/intertool/hc-local-provider.ts";
 import { registerControlTool } from "./src/tools/control-tool.ts";
 import { registerSpawnTool } from "./src/tools/spawn-tool.ts";
 import type { ToolSession } from "./src/tools/session.ts";
@@ -121,6 +124,8 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
       monitors: new MonitorManager(),
       isIdle: () => (typeof ctx.isIdle === "function" ? ctx.isIdle() : true),
     };
+    session.providers = new ProviderRegistry([new HcLocalProvider(session)]);
+    session.resultAdapters = new ResultAdapterRegistry(new PiSessionResultAdapter());
 
     const fromEntries = persistence.restore(runtime.parentSessionId);
     const runsRoot = runsRootFor({ agentDir: runtime.agentDir, env: runtime.env });

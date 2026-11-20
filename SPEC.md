@@ -1584,7 +1584,16 @@ export interface HcSubagentsCapabilities {
   piVersion: string;
   platforms: string[];
   maxConcurrency: number;
-  features: Array<"spawn" | "wait" | "send" | "cancel" | "events" | "project-agents">;
+  features: Array<
+    | "spawn"
+    | "wait"
+    | "send"
+    | "cancel"
+    | "events"
+    | "project-agents"
+    | "providers"
+    | "result-adapters"
+  >;
 }
 
 export interface SubagentResult {
@@ -1631,8 +1640,12 @@ export interface ProviderHost {
   readonly config: Readonly<HcSubagentsConfig>;
   resolveAgent(name: string, scope?: "user" | "project" | "both"): Promise<AgentDefinition>;
   resolveCwd(cwd?: string): string;
-  assertProjectTrust(agent: AgentDefinition): void;
-  acquireConcurrencySlot(): Promise<() => void>;
+  assertProjectTrust(agent: AgentDefinition): void | Promise<void>;
+  acquireConcurrencySlot(options?: {
+    write?: boolean;
+    cwd?: string;
+    signal?: AbortSignal;
+  }): Promise<() => void>;
 }
 ```
 
@@ -1649,6 +1662,7 @@ export interface SpawnRequest {
   agentScope?: "user" | "project" | "both";
   origin?: string;              // default "intertool"; recorded in run.json
   clientRequestId?: string;     // idempotency key per origin
+  backend?: string;             // provider id; omitted or "hc-local" for the built-in
   signal?: AbortSignal;
 }
 ```
@@ -1722,13 +1736,25 @@ export interface ProviderChild {
   terminal?: string;
   childId: string;
   sessionFile?: string;
+  // Additive metadata used by the service for records/adapters.
+  runId?: string;
+  runDir?: string;
+  resultFile?: string;
+  agent?: AgentDefinition;
+  cwd?: string;
+  record?: SubagentRecord;      // local providers hand back the registered record
   wait(opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<SubagentResult>;
   cancel(opts?: { force?: boolean }): Promise<void>;
   readOutput?(lines?: number): Promise<string>;
 }
 ```
 
-The service chooses the first registered provider whose `canHandle` is true; if none, return `unsupported_backend`. Providers MUST NOT bypass `host` validation (agent resolution, trust, concurrency, run-dir creation). Providers are trusted code; document that adding one expands the attack surface.
+The service chooses the first registered provider whose `canHandle` is true; if none, return
+`unsupported_backend`. `backend` lets a custom provider claim its own requests without
+replacing `hc-local`; omitted backends stay local. Providers MUST NOT bypass `host`
+validation (agent resolution, trust, concurrency, run-dir creation). Providers are trusted
+code; document that adding one expands the attack surface. `registerProvider` returns an
+unregister function; duplicate ids are rejected.
 
 #### `ResultAdapter`
 
@@ -1737,12 +1763,35 @@ Allows non-pi agents (Claude Code, Codex, etc.) or report-protocol children to p
 ```ts
 export interface ResultAdapter {
   readonly id: string;
-  canHandle(input: { provider: string; sessionFile?: string; terminal?: string }): boolean;
-  read(input: { provider: string; sessionFile?: string; terminal?: string }): Promise<SubagentResult>;
+  canHandle(input: {
+    provider: string;
+    sessionFile?: string;
+    terminal?: string;
+    childId?: string;
+    runId?: string;
+    resultFile?: string;
+    turnStartedAtMs?: number;
+    durationMs?: number;
+    final?: boolean;
+  }): boolean;
+  read(input: {
+    provider: string;
+    sessionFile?: string;
+    terminal?: string;
+    childId?: string;
+    runId?: string;
+    resultFile?: string;
+    turnStartedAtMs?: number;
+    durationMs?: number;
+    final?: boolean;
+  }): Promise<SubagentResult>;
 }
 ```
 
-MVP registers `PiSessionResultAdapter`. If no adapter matches, return `incomplete` with paths; do not scrape screen for a final answer.
+MVP registers `PiSessionResultAdapter` as the fallback; custom adapters run first so a
+package can override extraction for its backend. `registerResultAdapter` returns an
+unregister function. If no adapter matches, return `incomplete` with paths; do not scrape
+screen for a final answer.
 
 #### `AgentSource`
 
@@ -2074,8 +2123,8 @@ implementation plan in `01_impl_pi_hc_subagents_extension.md` follow these decis
 1. **Follow-up transport:** `send` ships only with the private pipe in M3. PTY remains
    an internal test fallback and is never a public tool.
 2. **Windows:** macOS/Linux first. Windows named pipes/ConPTY are M4.
-3. **Remote:** remote `hc` machines are a later differentiator; provider interfaces are
-   designed now, implemented after M3.
+3. **Remote:** remote `hc` machines remain a later differentiator. Provider interfaces
+   shipped in phase 15 with the built-in local provider; remote transport is M4.
 4. **Intertool contract:** the service symbol/event names are documented as a public API
    from M2 and marked v1 experimental.
 5. **Result persistence:** store the full result text in `result.json` (0600, capped) plus

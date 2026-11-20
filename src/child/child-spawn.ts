@@ -34,6 +34,7 @@ export interface RunMetadata {
   pipeName?: string;
   terminalName: string;
   origin: string;
+  provider?: string;
   slug: string;
   background: boolean;
   labels: Record<string, string>;
@@ -55,6 +56,7 @@ export interface SpawnChildOptions {
   signal?: AbortSignal;
   origin?: string;
   background?: boolean;
+  provider?: string;
   now?: () => Date;
   generateSuffix?: () => string;
 }
@@ -129,6 +131,7 @@ export function createRunMetadata(plan: SpawnPlan, options: SpawnChildOptions = 
     pipeName: plan.pipeName,
     terminalName: plan.paths.terminalName,
     origin: options.origin ?? "tool",
+    ...(options.provider === undefined ? {} : { provider: options.provider }),
     slug: plan.paths.slug,
     background: options.background === true,
     ...(plan.agent.model ? { model: plan.agent.model } : {}),
@@ -217,6 +220,7 @@ export async function spawnChild(
 export interface CreateRecordOptions {
   parentSessionId: string;
   origin?: string;
+  provider?: string;
   background?: boolean;
   now?: () => Date;
   baselineTurn?: number;
@@ -272,6 +276,7 @@ export function createSubagentRecord(
     labels: { ...terminal.labels },
     background: options.background ?? false,
     origin: options.origin ?? "tool",
+    ...(options.provider === undefined ? {} : { provider: options.provider }),
   };
 }
 

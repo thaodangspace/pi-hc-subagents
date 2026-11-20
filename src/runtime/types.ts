@@ -100,6 +100,8 @@ export interface SubagentRecord {
   labels: Record<string, string>;
   background: boolean;
   origin: string;
+  /** Backend that spawned this child; defaults to `hc-local` for local runs. */
+  provider?: string;
   lastScreen?: string;
   error?: string;
 }

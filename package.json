@@ -1,6 +1,6 @@
 {
   "name": "pi-hc-subagents",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.1",
   "description": "Delegate tasks to interactive pi subagents running in herdr-core terminals",
   "type": "module",
   "license": "MIT",
@@ -19,7 +19,8 @@
     "agents",
     "README.md",
     "SPEC.md",
-    "PLAN.md"
+    "PLAN.md",
+    "AGENTS.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
