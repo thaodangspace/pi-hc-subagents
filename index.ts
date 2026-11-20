@@ -12,6 +12,7 @@ import { type ExtensionRuntime, createRuntime, modelRef } from "./src/runtime/ru
 import { setupNotification } from "./src/runtime/setup-mode.ts";
 import { shutdownOwnedChildren } from "./src/runtime/lifecycle.ts";
 import { MonitorManager } from "./src/runtime/async-monitor.ts";
+import { SettleHintHub } from "./src/runtime/settle-hints.ts";
 import { Notifier } from "./src/runtime/notifier.ts";
 import { RunPersistence, mergeSummaries, type PersistenceEntry } from "./src/runtime/persistence.ts";
 import { loadSummariesFromRunDirs, reconcileRuns } from "./src/runtime/reconcile.ts";
@@ -75,6 +76,7 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
       current.service.dispose();
     }
     current.notifier?.dispose();
+    current.settleHints?.closeAll();
     await shutdownOwnedChildren(current).catch(() => {});
     for (const record of current.registry.listForParent(current.runtime.parentSessionId)) {
       current.persistence?.append(record);
@@ -124,6 +126,7 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
       }),
       persistence,
       monitors: new MonitorManager(),
+      settleHints: new SettleHintHub(),
       isIdle: () => (typeof ctx.isIdle === "function" ? ctx.isIdle() : true),
     };
     session.providers = new ProviderRegistry([new HcLocalProvider(session)]);

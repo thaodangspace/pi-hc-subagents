@@ -11,6 +11,7 @@ import type { IntertoolServiceV1 } from "../intertool/service.ts";
 import type { SubagentRecord } from "../runtime/types.ts";
 import type { AgentSource } from "../agents/agents.ts";
 import type { ProviderRegistry, ResultAdapterRegistry } from "../intertool/adapters.ts";
+import type { SettleHintHub } from "../runtime/settle-hints.ts";
 
 export interface ToolSession {
   runtime: ExtensionRuntime;
@@ -18,6 +19,8 @@ export interface ToolSession {
   scheduler: Scheduler;
   /** Background monitors; absent in minimal test sessions. */
   monitors?: MonitorManager;
+  /** Settle-hint subscriptions (one per child); absent in minimal test sessions. */
+  settleHints?: SettleHintHub;
   /** Parent notification queue. */
   notifier?: Notifier;
   /** Session-local persistence of bounded run summaries. */
