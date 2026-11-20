@@ -90,6 +90,11 @@ export interface FinalizeOptions {
   fallbackOutcome: TurnOutcome;
   fallbackError: string;
   parseError?: string;
+  /**
+   * How the settling observation arrived. Only the settle path sets it; the
+   * fallback/exited paths leave it undefined.
+   */
+  observedBy?: "push" | "poll";
 }
 
 export interface FinalizeResult {
@@ -107,6 +112,8 @@ export interface FinalizeResult {
 export async function finalizeFromSession(options: FinalizeOptions): Promise<FinalizeResult> {
   const { session, record, terminal, parsed } = options;
   const now = new Date().toISOString();
+  const observedPatch: { observedBy?: "push" | "poll" } =
+    options.observedBy === undefined ? {} : { observedBy: options.observedBy };
 
   if (!parsed || parsed.state === "pending") {
     const error = options.parseError ?? options.fallbackError;
@@ -117,6 +124,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
       turn: terminal.turn,
       settledAt: now,
       error,
+      ...observedPatch,
       turns: updateCurrentTurns(record, () => ({
         state: "failed" as const,
         outcome: options.fallbackOutcome,
@@ -151,6 +159,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
       resultFile: options.resultFile,
       error,
       code: "incomplete",
+      ...observedPatch,
     });
     session.persistence?.append(updated);
     return {
@@ -189,6 +198,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
     settledAt: now,
     sessionFile: parsed.sessionFile,
     error: parsed.error,
+    ...observedPatch,
     turns: updateCurrentTurns(record, () => ({
       state:
         state === "completed" ? ("completed" as const) : state === "cancelled" ? ("cancelled" as const) : ("failed" as const),
@@ -235,6 +245,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
     branchUncertain: parsed.branchUncertain,
     error: parsed.error,
     ...(parsed.error ? { code: "error" } : {}),
+    ...observedPatch,
   });
 
   const contentText =

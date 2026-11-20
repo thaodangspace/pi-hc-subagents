@@ -25,6 +25,7 @@ import { HcSubagentError } from "../core/error.ts";
 import type { ToolSession } from "../tools/session.ts";
 import { ChildStateMachine } from "./state-machine.ts";
 import { defaultMonitorHooks } from "./run-hooks.ts";
+import { wakeSourceFor } from "./settle-hints.ts";
 import type { SubagentRecord } from "./types.ts";
 
 export interface PreparedBackgroundRun {
@@ -177,6 +178,7 @@ export async function startBackgroundRun(
     releaseSlot = null;
     const controller = locateController;
     locateController = null;
+    const wake = wakeSourceFor(session.settleHints, record.childId);
     session.monitors.start({
       session,
       record,
@@ -188,6 +190,7 @@ export async function startBackgroundRun(
       cancelLocate: () => controller?.abort(),
       ...(slot === null ? {} : { release: slot }),
       pollIntervalMs: runtime.config.pollIntervalMs,
+      ...(wake === undefined ? {} : { wake }),
       hooks: defaultMonitorHooks(session),
     });
 

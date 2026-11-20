@@ -22,6 +22,7 @@ import {
 import { resolveChildId } from "./id-resolve.ts";
 import { readResultFile } from "./result-store.ts";
 import { ChildStateMachine } from "./state-machine.ts";
+import { wakeSourceFor } from "./settle-hints.ts";
 import type { SubagentRecord, SubagentState, TurnOutcome, Usage } from "./types.ts";
 
 export interface SubagentBlocked {
@@ -219,12 +220,14 @@ export async function waitForRecord(
     ...(record.turns.at(-1)?.startedAtMs === undefined ? {} : { startedAtMs: record.turns.at(-1)?.startedAtMs }),
   });
 
+  const wake = wakeSourceFor(session.settleHints, record.childId);
   const outcome = await waitForChild({
     core: session.runtime.core,
     terminal: record.terminal,
     machine,
     pollIntervalMs: session.runtime.config.pollIntervalMs,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(wake === undefined ? {} : { wake }),
     onObservation(next) {
       session.registry.applyTerminal(record.childId, next);
     },

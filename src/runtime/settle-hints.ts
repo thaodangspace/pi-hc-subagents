@@ -13,6 +13,7 @@ import {
 } from "../child/pipe-transport.ts";
 import type { HcSubagentError } from "../core/error.ts";
 import type { PipeNotification, PipeNotificationStatus } from "../child/pipe-protocol.ts";
+import type { WakeSource } from "./wake-gate.ts";
 
 export const MAX_SETTLE_HINT_LISTENERS = 8;
 export const MAX_SETTLE_HINT_SEEN = 32;
@@ -31,6 +32,8 @@ export interface SettleHintStats {
   state: "idle" | "connecting" | "open" | "degraded" | "closed";
   hints: number; // accepted unique hints (after de-dupe)
   wakes: number; // listener deliveries (fan-out count)
+  /** Woken waits whose observation was not a terminal transition. */
+  falseWakes: number;
   staleDrops: number; // per-listener skips whose `since` is after the hint `at`
   duplicateDrops: number; // repeated (turn,status) frames
   listenerErrors: number; // listener throws that were contained
@@ -69,6 +72,7 @@ interface ChildEntry {
   seen: Map<string, number>;
   hints: number;
   wakes: number;
+  falseWakes: number;
   staleDrops: number;
   duplicateDrops: number;
   listenerErrors: number;
@@ -88,6 +92,7 @@ function newEntry(childId: string): ChildEntry {
     seen: new Map<string, number>(),
     hints: 0,
     wakes: 0,
+    falseWakes: 0,
     staleDrops: 0,
     duplicateDrops: 0,
     listenerErrors: 0,
@@ -144,6 +149,7 @@ function snapshot(entry: ChildEntry): SettleHintStats {
     state: stateOf(entry),
     hints: entry.hints,
     wakes: entry.wakes,
+    falseWakes: entry.falseWakes,
     staleDrops: entry.staleDrops,
     duplicateDrops: entry.duplicateDrops,
     listenerErrors: entry.listenerErrors,
@@ -267,6 +273,26 @@ export class SettleHintHub {
     };
   }
 
+  /**
+   * A wait loop woke but the observed transition was not terminal. Advisory
+   * bookkeeping only: unknown or closed children are a silent no-op.
+   */
+  noteFalseWake(childId: string): void {
+    const entry = this.#active.get(childId);
+    if (!entry) return;
+    entry.falseWakes += 1;
+  }
+
+  /**
+   * A listener dropped a hint because its turn predated the wait. Counted on
+   * the same `staleDrops` line as the hub's own `since` filter.
+   */
+  noteStaleWake(childId: string): void {
+    const entry = this.#active.get(childId);
+    if (!entry) return;
+    entry.staleDrops += 1;
+  }
+
   /** Final snapshot survives `close(childId)`; undefined only for a child the hub never saw. */
   stats(childId: string): SettleHintStats | undefined {
     const entry = this.#active.get(childId);
@@ -369,4 +395,21 @@ export class SettleHintHub {
       this.#retained.delete(oldest.value);
     }
   }
+}
+
+/**
+ * Structural wake source for one child, or `undefined` when no hub has a live
+ * entry for it. This is the only bridge from the hub to the wait loops, so the
+ * production path stays poll-only until a hub is started for the child.
+ */
+export function wakeSourceFor(hub: SettleHintHub | undefined, childId: string): WakeSource | undefined {
+  if (!hub) return undefined;
+  if (typeof childId !== "string" || childId.length === 0) return undefined;
+  if (!hub.has(childId)) return undefined;
+  return {
+    subscribe: (listener, options) => hub.onSettled(childId, listener, options),
+    stats: () => hub.stats(childId),
+    noteFalseWake: () => hub.noteFalseWake(childId),
+    noteStaleWake: () => hub.noteStaleWake(childId),
+  };
 }

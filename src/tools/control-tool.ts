@@ -29,6 +29,7 @@ import {
 } from "../runtime/result-format.ts";
 import { readResultFile } from "../runtime/result-store.ts";
 import { ChildStateMachine } from "../runtime/state-machine.ts";
+import { wakeSourceFor } from "../runtime/settle-hints.ts";
 import { renderSubagentToolResult } from "../ui/renderers.ts";
 import type { SubagentRecord, SubagentState } from "../runtime/types.ts";
 import { finalizeFromSession } from "../runtime/finalize.ts";
@@ -318,12 +319,14 @@ async function waitAction(
       : { startedAtMs: record.turns.at(-1)?.startedAtMs }),
   });
 
+  const wake = wakeSourceFor(session.settleHints, record.childId);
   const outcome = await waitForChild({
     core: session.runtime.core,
     terminal: record.terminal,
     machine,
     pollIntervalMs: session.runtime.config.pollIntervalMs,
     ...(signal === undefined ? {} : { signal }),
+    ...(wake === undefined ? {} : { wake }),
     onObservation(next) {
       session.registry.applyTerminal(record.childId, next);
     },

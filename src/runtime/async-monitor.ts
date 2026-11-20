@@ -20,6 +20,7 @@ import {
 import { ChildStateMachine, observationFromTerminal, type Transition } from "./state-machine.ts";
 import { cleanupFinishedChild } from "./lifecycle.ts";
 import type { SubagentRecord } from "./types.ts";
+import { WakeGate, type WakeSource } from "./wake-gate.ts";
 
 export interface MonitorHooks {
   onBlocked?: (record: SubagentRecord, episode: number, kind: string | null, message: string, screenTail: string) => void;
@@ -42,6 +43,8 @@ export interface MonitorOptions {
   /** Releases the scheduler slot; called exactly once. */
   release?: () => void;
   pollIntervalMs: number;
+  /** Advisory settle-hint source; absent means the poll loop is unchanged. */
+  wake?: WakeSource;
   hooks?: MonitorHooks;
 }
 
@@ -50,10 +53,13 @@ const MIN_POLL_MS = 250;
 export class AsyncMonitor {
   readonly childId: string;
   readonly #options: MonitorOptions;
+  readonly #gate = new WakeGate({ unref: true });
   #stopped = false;
-  #timer: ReturnType<typeof setTimeout> | null = null;
   #released = false;
   #onStop: (() => void) | null = null;
+  #unsubscribe: (() => void) | null = null;
+  /** True when the current observation followed a wake rather than a timer. */
+  #woke = false;
 
   constructor(options: MonitorOptions) {
     this.#options = options;
@@ -75,17 +81,39 @@ export class AsyncMonitor {
   stop(_reason = "stopped"): void {
     if (this.#stopped) return;
     this.#stopped = true;
-    if (this.#timer) {
-      clearTimeout(this.#timer);
-      this.#timer = null;
-    }
+    // Shutdown must never wait out an interval.
+    this.#gate.abort();
     this.#options.cancelLocate?.();
     this.#release();
     this.#onStop?.();
   }
 
   async #run(): Promise<void> {
-    const { session, record, machine } = this.#options;
+    const { machine } = this.#options;
+    const wake = this.#options.wake;
+    if (wake) {
+      this.#unsubscribe = wake.subscribe(
+        (hint) => {
+          if (hint.turn > 0 && hint.turn <= machine.baselineTurn) {
+            wake.noteStaleWake?.();
+            return;
+          }
+          this.#gate.wake();
+        },
+        { since: machine.startedAtMs },
+      );
+    }
+    try {
+      await this.#observe(machine);
+    } finally {
+      this.#unsubscribe?.();
+      this.#unsubscribe = null;
+      this.#gate.abort();
+    }
+  }
+
+  async #observe(machine: ChildStateMachine): Promise<void> {
+    const { session, record } = this.#options;
     let last = this.#options.terminal;
 
     for (;;) {
@@ -111,7 +139,7 @@ export class AsyncMonitor {
           return;
         }
         if (deadline?.type === "cancelled") return;
-        await this.#sleep();
+        await this.#waitForWake();
         continue;
       }
 
@@ -125,7 +153,7 @@ export class AsyncMonitor {
           await this.#handleBlocked(terminal, transition);
           break;
         case "settled":
-          await this.#finishSettled(terminal);
+          await this.#finishSettled(terminal, this.#woke ? "push" : "poll");
           return;
         case "exited":
           await this.#finishExited(terminal, "terminal exited before producing a result");
@@ -140,10 +168,11 @@ export class AsyncMonitor {
         case "continue":
         case "wait_timeout":
           // Monitors are unbounded: a background child may work for hours.
+          if (this.#woke) this.#options.wake?.noteFalseWake?.();
           break;
       }
 
-      await this.#sleep();
+      await this.#waitForWake();
     }
   }
 
@@ -209,7 +238,7 @@ export class AsyncMonitor {
     hooks?.onBlocked?.(updated, transition.episode, transition.kind, transition.message, screenTail);
   }
 
-  async #finishSettled(terminal: TerminalRecord): Promise<void> {
+  async #finishSettled(terminal: TerminalRecord, observedBy: "push" | "poll"): Promise<void> {
     const parsed = await this.#parseSession(true);
     const finalized = await finalizeFromSession({
       session: this.#options.session,
@@ -220,6 +249,7 @@ export class AsyncMonitor {
       resultFile: this.#options.resultFile,
       fallbackOutcome: "incomplete",
       fallbackError: parsed ? "could not parse a result for this turn" : "no session file appeared for this child",
+      observedBy,
     });
     await this.#publish(finalized);
   }
@@ -313,16 +343,12 @@ export class AsyncMonitor {
     this.#options.release?.();
   }
 
-  async #sleep(): Promise<void> {
+  async #waitForWake(): Promise<void> {
     if (this.#stopped) return;
     const interval = Math.max(MIN_POLL_MS, this.#options.pollIntervalMs);
-    await new Promise<void>((resolve) => {
-      this.#timer = setTimeout(() => {
-        this.#timer = null;
-        resolve();
-      }, interval);
-      this.#timer.unref?.();
-    });
+    const result = await this.#gate.wait(interval);
+    // `abort` only follows stop(), which the loop top re-checks.
+    this.#woke = result === "wake";
   }
 }
 

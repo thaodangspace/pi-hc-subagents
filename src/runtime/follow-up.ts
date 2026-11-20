@@ -15,6 +15,7 @@ import type { ToolSession } from "../tools/session.ts";
 import type { FinalizeResult } from "./finalize.ts";
 import { persistRunSummary, readScreenTail } from "./finalize.ts";
 import { defaultMonitorHooks } from "./run-hooks.ts";
+import { wakeSourceFor } from "./settle-hints.ts";
 import { collectResultForRecord, findSessionFile } from "./run-ops.ts";
 import { ChildStateMachine } from "./state-machine.ts";
 import { type SubagentRecord, type TurnRecord, updateCurrentTurns } from "./types.ts";
@@ -148,6 +149,7 @@ export async function sendFollowUp(
         initialPhase: "working",
         startedAtMs,
       });
+      const wake = wakeSourceFor(session.settleHints, started.childId);
       session.monitors.start({
         session,
         record: started,
@@ -157,6 +159,7 @@ export async function sendFollowUp(
         resultFile,
         locate: () => findSessionFile(session, started),
         pollIntervalMs: session.runtime.config.pollIntervalMs,
+        ...(wake === undefined ? {} : { wake }),
         hooks: defaultMonitorHooks(session),
       });
     }
@@ -170,12 +173,14 @@ export async function sendFollowUp(
     initialPhase: "working",
     startedAtMs,
   });
+  const wake = wakeSourceFor(session.settleHints, record.childId);
   const outcome = await waitForChild({
     core: session.runtime.core,
     terminal: record.terminal,
     machine,
     pollIntervalMs: session.runtime.config.pollIntervalMs,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(wake === undefined ? {} : { wake }),
     onObservation(next) {
       session.registry.applyTerminal(record.childId, next);
     },

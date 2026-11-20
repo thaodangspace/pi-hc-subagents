@@ -16,6 +16,7 @@ import { discoverAgents, resolveAgent, validateAgentForSpawn } from "../agents/a
 import { authorizeProjectAgent } from "../agents/project-policy.ts";
 import { buildSpawnPlan } from "../child/child-command.ts";
 import { modelRef } from "../runtime/runtime.ts";
+import { wakeSourceFor } from "../runtime/settle-hints.ts";
 import { createSubagentRecord, spawnChild } from "../child/child-spawn.ts";
 import { createRunPaths } from "../child/paths.ts";
 import { locateSessionFile } from "../child/session-locate.ts";
@@ -398,6 +399,8 @@ export function registerSpawnTool(
           startedAtMs: turnStartedAtMs,
         });
 
+        const wake = wakeSourceFor(session.settleHints, record.childId);
+
         if (background) {
           const releaseSlot = release;
           release = null;
@@ -415,6 +418,7 @@ export function registerSpawnTool(
             cancelLocate: () => controller?.abort(),
             ...(slot === null ? {} : { release: slot }),
             pollIntervalMs: runtime.config.pollIntervalMs,
+            ...(wake === undefined ? {} : { wake }),
             hooks: defaultMonitorHooks(session),
           });
           session.persistence?.append(record);
@@ -445,6 +449,7 @@ export function registerSpawnTool(
           machine,
           pollIntervalMs: runtime.config.pollIntervalMs,
           ...(signal === undefined ? {} : { signal }),
+          ...(wake === undefined ? {} : { wake }),
           onObservation(terminal, transition) {
             session.registry.applyTerminal(record.childId, terminal);
             const now = Date.now();

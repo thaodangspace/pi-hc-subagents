@@ -16,6 +16,7 @@ import {
   MAX_SETTLE_HINT_SEEN,
   SettleHintHub,
   type SettleHint,
+  wakeSourceFor,
   type SettleHintTransportInput,
 } from "../../src/runtime/settle-hints.ts";
 
@@ -455,4 +456,76 @@ test("stats snapshots contain no text, task, or prompt keys", () => {
   for (const key of ["text", "task", "prompt"]) {
     assert.equal(json.includes(`"${key}"`), false, `stats must not carry a ${key} field`);
   }
+});
+
+test("falseWakes starts at 0 and noteFalseWake counts only live children", () => {
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  hub.start("child-1", "pi-hc-0123456789abcdef-child-1");
+
+  assert.equal(hub.stats("child-1")?.falseWakes, 0);
+  hub.noteFalseWake("child-1");
+  hub.noteFalseWake("child-1");
+  assert.equal(hub.stats("child-1")?.falseWakes, 2);
+
+  // Unknown and closed children are silent no-ops.
+  assert.doesNotThrow(() => hub.noteFalseWake("child-unknown"));
+  assert.equal(hub.stats("child-unknown"), undefined);
+  hub.close("child-1");
+  hub.noteFalseWake("child-1");
+  hub.noteStaleWake("child-1");
+  assert.equal(hub.stats("child-1")?.falseWakes, 2);
+  assert.equal(hub.stats("child-1")?.staleDrops, 0);
+});
+
+test("noteStaleWake bumps staleDrops on the live entry", () => {
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  hub.start("child-1", "pi-hc-0123456789abcdef-child-1");
+
+  hub.noteStaleWake("child-1");
+  hub.noteStaleWake("child-1");
+  assert.equal(hub.stats("child-1")?.staleDrops, 2);
+  assert.equal(hub.stats("child-1")?.falseWakes, 0);
+});
+
+test("wakeSourceFor() is undefined without a hub or without a started child", () => {
+  assert.equal(wakeSourceFor(undefined, "child-1"), undefined);
+
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  assert.equal(wakeSourceFor(hub, "child-1"), undefined);
+
+  // A child whose start() failed closed (no pipe) has no live entry either.
+  assert.equal(hub.start("child-2", ""), false);
+  assert.equal(wakeSourceFor(hub, "child-2"), undefined);
+  assert.equal(wakeSourceFor(hub, ""), undefined);
+});
+
+test("wakeSourceFor() forwards hints, stats, false wakes, and stale wakes for a started child", () => {
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  hub.start("child-1", "pi-hc-0123456789abcdef-child-1");
+
+  const source = wakeSourceFor(hub, "child-1");
+  assert.ok(source);
+
+  const seen = recorder();
+  const unsubscribe = source.subscribe(seen.listener, { since: AT_MS - 1000 });
+  fake.only().emit({ turn: 3 });
+
+  assert.equal(seen.hints.length, 1);
+  assert.equal(seen.hints[0]?.turn, 3);
+  assert.equal(source.stats?.()?.wakes, 1);
+
+  source.noteFalseWake?.();
+  source.noteStaleWake?.();
+  source.noteStaleWake?.();
+  assert.equal(source.stats?.()?.falseWakes, 1);
+  assert.equal(source.stats?.()?.staleDrops, 2);
+
+  unsubscribe();
+  fake.only().emit({ turn: 4 });
+  assert.equal(seen.hints.length, 1);
+  assert.equal(source.stats?.()?.listeners, 0);
 });

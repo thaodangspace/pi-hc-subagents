@@ -32,6 +32,8 @@ export interface SubagentResultDetails {
   error?: string;
   code?: string;
   background?: boolean;
+  /** How the settling observation arrived: a settle hint or the poll timer. */
+  observedBy?: "push" | "poll";
   text?: string;
 }
 

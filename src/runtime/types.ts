@@ -103,6 +103,8 @@ export interface SubagentRecord {
   /** Backend that spawned this child; defaults to `hc-local` for local runs. */
   provider?: string;
   lastScreen?: string;
+  /** How the settling observation arrived; only the settle path sets it. */
+  observedBy?: "push" | "poll";
   error?: string;
 }
 
