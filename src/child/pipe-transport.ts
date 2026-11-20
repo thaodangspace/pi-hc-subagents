@@ -11,11 +11,14 @@ import { HcSubagentError, toHcSubagentError, type HcSubagentErrorCode } from "..
 import { splitCompleteLines } from "../core/jsonl.ts";
 import {
   MAX_PIPE_FRAME_BYTES,
+  decodePipeNotification,
   decodePipeResponse,
   encodeFrame,
+  pipeDir,
   pipeNameFor,
   pipePathFor,
   validatePipeName,
+  type PipeNotification,
   type PipeResponse,
 } from "./pipe-protocol.ts";
 
@@ -212,4 +215,295 @@ export async function waitForPipe(
       await sleep(intervalMs);
     }
   }
+}
+
+/**
+ * Reconnect policy promised by SPEC §8.6: 500 ms, 1 s, 2 s, 5 s, 10 s, 30 s.
+ * One attempt per entry, so a dead child cannot leave an immortal timer.
+ */
+export const DEFAULT_NOTIFICATION_BACKOFF_MS: readonly number[] = [500, 1000, 2000, 5000, 10_000, 30_000];
+export const MAX_NOTIFICATION_BACKOFF_MS = 30_000;
+
+export type NotificationSubscriptionState = "connecting" | "open" | "degraded" | "closed";
+
+export interface NotificationSubscriptionOptions {
+  pipeName: string;
+  /** Defaults to `pipeDir()`. */
+  dir?: string;
+  signal?: AbortSignal;
+  onSettled(notification: PipeNotification): void;
+  /** Terminal, non-retryable transport failure (for example a protocol violation). */
+  onTransportError?(error: HcSubagentError): void;
+  /** Terminal: the reconnect budget is exhausted. */
+  onDegraded?(error: HcSubagentError): void;
+  /** Called before each scheduled retry; `attempt` is 1-based. */
+  onReconnect?(attempt: number, delayMs: number): void;
+  backoffMs?: readonly number[];
+  /** Test seam: returns a cancel function. Defaults to an unref'd `setTimeout`. */
+  schedule?: (run: () => void, delayMs: number) => () => void;
+}
+
+export interface NotificationSubscription {
+  readonly path: string;
+  readonly state: NotificationSubscriptionState;
+  readonly reconnects: number;
+  readonly lastError: HcSubagentError | null;
+  close(): void;
+}
+
+/** A throwing listener must never crash the process or look like a protocol error. */
+function containedRun(fn: () => void): void {
+  try {
+    fn();
+  } catch {
+    // Listener failures are the listener's problem; transport work continues.
+  }
+}
+
+function defaultSchedule(run: () => void, delayMs: number): () => void {
+  const timer = setTimeout(run, delayMs);
+  timer.unref?.();
+  return () => clearTimeout(timer);
+}
+
+/**
+ * Long-lived consumer of `settled` frames on a child's private pipe.
+ *
+ * The subscriber never sends requests: a frame carrying a string `id` is a
+ * response and is ignored. It never throws into the caller — a malformed or
+ * oversize frame ends the subscription as a terminal protocol error, and an
+ * exhausted reconnect budget ends it as `degraded`. Exactly one terminal
+ * condition wins; the rest are dropped, mirroring `PipeClient#request`.
+ */
+export function subscribeChildNotifications(
+  options: NotificationSubscriptionOptions,
+): NotificationSubscription {
+  const issue = validatePipeName(options.pipeName);
+  if (issue) throw new HcSubagentError("validation", issue);
+  const socketPath = pipePathFor(options.pipeName, options.dir ?? pipeDir());
+  const backoff = options.backoffMs ?? DEFAULT_NOTIFICATION_BACKOFF_MS;
+  const scheduleFn = options.schedule ?? defaultSchedule;
+  const signal = options.signal;
+
+  let current: NotificationSubscriptionState = "connecting";
+  let socket: net.Socket | null = null;
+  let buffer = "";
+  let attempts = 0;
+  let reconnects = 0;
+  let lastError: HcSubagentError | null = null;
+  let hadConnection = false;
+  let closed = false;
+  let terminal = false;
+  let cancelRetry: (() => void) | null = null;
+
+  const clearRetry = (): void => {
+    const cancel = cancelRetry;
+    cancelRetry = null;
+    if (cancel) containedRun(cancel);
+  };
+
+  const forgetSocket = (target: net.Socket | null): void => {
+    if (socket !== target) return;
+    socket = null;
+    if (target && !target.destroyed) target.destroy();
+  };
+
+  const cleanup = (): void => {
+    clearRetry();
+    const target = socket;
+    socket = null;
+    buffer = "";
+    if (target) target.destroy();
+    signal?.removeEventListener("abort", onAbort);
+  };
+
+  /** The first terminal condition wins; later events are dropped. */
+  const settleTerminal = (kind: "error" | "degraded", error: HcSubagentError): void => {
+    if (terminal || closed) return;
+    terminal = true;
+    current = kind === "error" ? "closed" : "degraded";
+    lastError = error;
+    cleanup();
+    if (kind === "error") {
+      const onTransportError = options.onTransportError;
+      if (onTransportError) containedRun(() => onTransportError(error));
+    } else {
+      const onDegraded = options.onDegraded;
+      if (onDegraded) containedRun(() => onDegraded(error));
+    }
+  };
+
+  const protocolError = (message: string): void => {
+    settleTerminal("error", new HcSubagentError("protocol", message));
+  };
+
+  const degrade = (): void => {
+    const cause = lastError;
+    const error = new HcSubagentError(
+      "unavailable",
+      `the child notification pipe did not reconnect after ${attempts} attempt(s)`,
+      {
+        hint: "the child may have exited; polling remains authoritative",
+        ...(cause === null ? {} : { cause }),
+      },
+    );
+    settleTerminal("degraded", error);
+  };
+
+  const scheduleReconnect = (): void => {
+    if (closed || terminal) return;
+    if (attempts >= backoff.length) {
+      degrade();
+      return;
+    }
+    const index = attempts;
+    attempts += 1;
+    const attempt = attempts;
+    const rawDelay = backoff[index] ?? 0;
+    const delayMs = Math.min(MAX_NOTIFICATION_BACKOFF_MS, Math.max(0, rawDelay));
+    current = "connecting";
+    const onReconnect = options.onReconnect;
+    if (onReconnect) containedRun(() => onReconnect(attempt, delayMs));
+    if (closed || terminal) return;
+
+    let fired = false;
+    let cancel: () => void;
+    try {
+      cancel = scheduleFn(() => {
+        if (fired) return;
+        fired = true;
+        cancelRetry = null;
+        connect();
+      }, delayMs);
+    } catch (error) {
+      settleTerminal("degraded", toHcSubagentError(error, "unavailable"));
+      return;
+    }
+    if (!fired) {
+      cancelRetry = () => {
+        if (fired) return;
+        fired = true;
+        cancel();
+      };
+    }
+  };
+
+  const onDisconnect = (error: HcSubagentError | null): void => {
+    if (closed || terminal) return;
+    if (error) lastError = error;
+    scheduleReconnect();
+  };
+
+  const handleLine = (line: string): void => {
+    if (closed || terminal) return;
+    if (line.trim().length === 0) return; // framing noise, same rule as the server
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line) as unknown;
+    } catch {
+      protocolError("child notification frame is not valid JSON");
+      return;
+    }
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      protocolError("child notification frame must be an object");
+      return;
+    }
+    // The subscriber never sends requests, so a reply is not ours: ignore it.
+    if (typeof (raw as { id?: unknown }).id === "string") return;
+    let notification: PipeNotification;
+    try {
+      notification = decodePipeNotification(line);
+    } catch (error) {
+      protocolError(toHcSubagentError(error, "protocol").message);
+      return;
+    }
+    containedRun(() => options.onSettled(notification));
+  };
+
+  const handleChunk = (chunk: string): void => {
+    if (closed || terminal) return;
+    buffer += chunk;
+    if (Buffer.byteLength(buffer, "utf8") > MAX_PIPE_FRAME_BYTES) {
+      protocolError(`child notification frame exceeds ${MAX_PIPE_FRAME_BYTES} bytes`);
+      return;
+    }
+    const split = splitCompleteLines(buffer);
+    buffer = split.remainder;
+    for (const line of split.lines) {
+      handleLine(line);
+      if (closed || terminal) return;
+    }
+  };
+
+  const connect = (): void => {
+    if (closed || terminal) return;
+    current = "connecting";
+    buffer = "";
+    let target: net.Socket;
+    try {
+      target = net.createConnection(socketPath);
+    } catch (error) {
+      lastError = toHcSubagentError(error, "unavailable");
+      scheduleReconnect();
+      return;
+    }
+    socket = target;
+    target.setEncoding("utf8");
+    target.unref?.();
+
+    target.once("connect", () => {
+      if (socket !== target || closed || terminal) return;
+      if (hadConnection) reconnects += 1;
+      hadConnection = true;
+      attempts = 0;
+      current = "open";
+    });
+    target.on("data", (chunk: string) => {
+      if (socket !== target) return;
+      handleChunk(chunk);
+    });
+    target.once("error", (error: Error) => {
+      if (socket !== target) return;
+      forgetSocket(target);
+      onDisconnect(toHcSubagentError(error, "unavailable"));
+    });
+    target.once("close", () => {
+      if (socket !== target) return;
+      forgetSocket(target);
+      onDisconnect(new HcSubagentError("unavailable", "the child notification pipe closed"));
+    });
+  };
+
+  function onAbort(): void {
+    close();
+  }
+
+  function close(): void {
+    if (closed) return;
+    closed = true;
+    current = "closed";
+    cleanup();
+  }
+
+  if (signal?.aborted) {
+    closed = true;
+    current = "closed";
+  } else {
+    signal?.addEventListener("abort", onAbort, { once: true });
+    connect();
+  }
+
+  return {
+    path: socketPath,
+    get state(): NotificationSubscriptionState {
+      return current;
+    },
+    get reconnects(): number {
+      return reconnects;
+    },
+    get lastError(): HcSubagentError | null {
+      return lastError;
+    },
+    close,
+  };
 }
