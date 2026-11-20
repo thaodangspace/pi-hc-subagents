@@ -35,10 +35,12 @@ them at the developer's default core.
 | `src/config/**` | Config schema/defaults, precedence, env overrides, warnings, agent-dir resolution. |
 | `src/agents/**` | Agent frontmatter/discovery, precedence, access inference, project-agent policy. |
 | `src/child/**` | Deterministic spawn plan, run paths, atomic files, session parsing, pipe protocol/transport, pi result adapter. |
-| `src/runtime/**` | Registry, scheduler, state machine, monitors, persistence, reconciliation, retention, result publication, provider-aware run operations. |
+| `src/runtime/**` | Registry, scheduler, state machine, monitors, wake gate, settle-hint hub, persistence, reconciliation, retention, result publication, provider-aware run operations. |
 | `src/intertool/**` | Service v1, events, provider/result-adapter interfaces and registries, built-in local provider. |
 | `src/tools/**` | `hc_subagent` (single/batch/chain) and `hc_subagent_control` tools. No business logic beyond tool adapters. |
 | `src/ui/**` | Widget/footer, renderers, `/hc-subagents` command. |
+| `src/runtime/settle-hints.ts` | Per-child settled-hint hub: one long-lived pipe subscription per child, bounded listener fan-out, de-dupe/staleness, and counters (no task/result text). |
+| `src/runtime/wake-gate.ts` | Shared timer/wake/abort wait primitive used by monitors and synchronous waits; a hint shortens a wait but never decides a state. |
 | `test/unit` | Pure modules, fakes, security checks. |
 | `test/contract` | Pinned `hc schema` contract and minimum-version guard. |
 | `test/integration` | Isolated real `hc` cores with fake or real children. |
@@ -76,6 +78,10 @@ them at the developer's default core.
   request per connection with bounded in-flight requests. When the parent runs outside
   `hc`, the endpoint comes from `hc.socketPath` / `PI_HC_SUBAGENTS_SOCKET`; inside `hc`
   the environment always wins.
+- **Settle hints are advisory.** A child's `settled` pipe frame only shortens a waiter's
+  sleep; `terminal.get` plus the state machine stay authoritative, `pollIntervalMs`
+  remains the fallback, and a lost or degraded channel is never evidence that the child
+  died. `wakeOnSettle: false` constructs no hub and is byte-identical to poll-only.
 - **External parent mode.** Without `HC_TERMINAL_ID`, children are parented to
   `hc.parentTerminal` / `PI_HC_SUBAGENTS_PARENT_TERMINAL` when set, else started with
   `no_parent: true` (root terminals). The extension still kills owned children on
@@ -109,6 +115,7 @@ them at the developer's default core.
 | New provider | `src/intertool/adapters.ts` types, a provider implementation, service registration test |
 | New result adapter | `src/intertool/adapters.ts`, adapter implementation, `test/unit/adapters.test.ts` |
 | Intertool API/event | `src/intertool/service.ts`, `src/intertool/events.ts`, SPEC §19, README, tests |
+| Settle-hint wake path | frame `src/child/pipe-protocol.ts` / `child.ts`, transport `src/child/pipe-transport.ts`, hub `src/runtime/settle-hints.ts`, gate `src/runtime/wake-gate.ts`, call sites (`src/runtime/async-monitor.ts`, `src/child/wait-child.ts`, `src/runtime/run-background.ts`, `src/runtime/run-ops.ts`), tests |
 | Tool schema/UX | `src/tools/**`, `src/ui/**`, tests |
 | Benchmark arm/metric | `bench/arms.ts`, `bench/metrics.ts`, `bench/types.ts`, `test/unit/bench-metrics.test.ts` |
 | Benchmark task suite | `bench/tasks/<id>.json`, `bench/fixture/<id>/` |

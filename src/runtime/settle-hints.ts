@@ -398,6 +398,103 @@ export class SettleHintHub {
 }
 
 /**
+ * Bounded observability view of one child's hint channel. Counters only: no
+ * task text, result text, paths, or per-hint detail.
+ */
+export interface SettleHintWakeSummary {
+  mode: "push" | "poll";
+  hints: number;
+  wakes: number;
+  falseWakes: number;
+  staleDrops: number;
+  duplicateDrops: number;
+  reconnects: number;
+  degraded: boolean;
+}
+
+const MAX_SUMMARY_COUNT = Number.MAX_SAFE_INTEGER;
+
+/** Non-negative integer, saturating so a display line stays bounded. */
+function boundedCount(value: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.min(MAX_SUMMARY_COUNT, Math.max(0, Math.trunc(value)));
+}
+
+function liveEpisode(state: SettleHintStats["state"] | undefined): boolean {
+  return state === "connecting" || state === "open" || state === "degraded";
+}
+
+/**
+ * One child's wake summary, or `undefined` when the feature is off or the hub
+ * does not exist (poll-only). A retained final snapshot stays readable so an
+ * operator can see how a finished run was settled.
+ */
+export function wakeSummary(
+  hub: SettleHintHub | undefined,
+  childId: string,
+  enabled: boolean,
+): SettleHintWakeSummary | undefined {
+  if (!enabled || !hub) return undefined;
+  const stats = typeof childId === "string" && childId.length > 0 ? hub.stats(childId) : undefined;
+  return {
+    mode: liveEpisode(stats?.state) ? "push" : "poll",
+    hints: boundedCount(stats?.hints ?? 0),
+    wakes: boundedCount(stats?.wakes ?? 0),
+    falseWakes: boundedCount(stats?.falseWakes ?? 0),
+    staleDrops: boundedCount(stats?.staleDrops ?? 0),
+    duplicateDrops: boundedCount(stats?.duplicateDrops ?? 0),
+    reconnects: boundedCount(stats?.reconnects ?? 0),
+    degraded: stats?.degraded === true,
+  };
+}
+
+/**
+ * One bounded, newline-free aggregate line for `/hc-subagents config`. Child
+ * ids are de-duplicated and only their counters are summed, so the line can
+ * never grow with the number of children or leak their identities.
+ */
+export function formatSettleHintSummary(
+  hub: SettleHintHub | undefined,
+  enabled: boolean,
+  childIds: readonly string[],
+): string {
+  let hints = 0;
+  let wakes = 0;
+  let falseWakes = 0;
+  let staleDrops = 0;
+  let duplicateDrops = 0;
+  let reconnects = 0;
+  let degraded = false;
+
+  const seen = new Set<string>();
+  for (const childId of childIds) {
+    if (typeof childId !== "string" || childId.length === 0 || seen.has(childId)) continue;
+    seen.add(childId);
+    const summary = wakeSummary(hub, childId, enabled);
+    if (!summary) continue;
+    hints += summary.hints;
+    wakes += summary.wakes;
+    falseWakes += summary.falseWakes;
+    staleDrops += summary.staleDrops;
+    duplicateDrops += summary.duplicateDrops;
+    reconnects += summary.reconnects;
+    degraded ||= summary.degraded;
+  }
+
+  const mode = enabled && hub ? "push" : "poll";
+  return [
+    `settle hints: mode=${mode}`,
+    `hints=${boundedCount(hints)}`,
+    `wakes=${boundedCount(wakes)}`,
+    `falseWakes=${boundedCount(falseWakes)}`,
+    `stale=${boundedCount(staleDrops)}`,
+    `dup=${boundedCount(duplicateDrops)}`,
+    `reconnects=${boundedCount(reconnects)}`,
+    `degraded=${degraded}`,
+  ].join(" ");
+}
+
+/**
  * Structural wake source for one child, or `undefined` when no hub has a live
  * entry for it. This is the only bridge from the hub to the wait loops, so the
  * production path stays poll-only until a hub is started for the child.

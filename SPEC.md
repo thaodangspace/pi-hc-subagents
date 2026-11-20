@@ -970,6 +970,8 @@ interface Usage {
 - If the file is being appended and the last line is partial, ignore the partial line and retry.
 - If the session file is huge (> 64 MiB), stream/read in chunks and stop after finding the last assistant on the branch; do not load the entire file into memory if avoidable.
 - Do not treat "core status done" as proof of a final text; always verify the assistant `stopReason`.
+- A settle hint from the child pipe (when enabled, §19.5) only shortens the wait before
+  this observation; parsing, the retry budget, and the `stopReason` check are unchanged.
 
 ### 12.6 Formatting and truncation
 
@@ -1060,6 +1062,9 @@ Poll `terminal.get` every `pollIntervalMs` (default 750 ms; min 250 ms):
 - `turn > baselineTurn` is the primary completion signal; status words are secondary.
 - If status is `done` but `turn <= baselineTurn` (stale status from before), keep waiting; do not settle.
 - If status is `idle` and `turn <= baselineTurn` before startup is proven, keep waiting until startup deadline.
+- A settle hint from the child pipe (when `wakeOnSettle` is true) only shortens the wait
+  between polls: the loop still re-reads `terminal.get` and applies exactly the rules
+  above. A hint never settles a child by itself, and a false wake just costs one poll.
 
 ### 13.5 Blocked handling
 
@@ -1300,7 +1305,23 @@ rather than silently ignoring it.
 ### 16.1 Monitor
 
 - One async monitor per background child (and optionally per foreground child if `monitorAfterReturn` is enabled).
-- Poll interval: `pollIntervalMs` (default 750 ms).
+- Poll interval: `pollIntervalMs` (default 750 ms). Polling is authoritative: the state
+  machine still decides from `terminal.get`, never from a hint.
+- Settle hints (advisory). When `wakeOnSettle` is true (the default) and the child record
+  has a `pipeName`, the extension keeps one long-lived notification subscription per
+  child (`SettleHintHub`, §19.5 private pipe protocol). A `settled` frame only shortens
+  the wait: every wake is followed by `terminal.get` and the same state-machine
+  observation, so a lost, stale, duplicated, or wrong hint costs at most one poll
+  interval. A disconnected or degraded channel falls back to polling and MUST NOT be
+  read as child death (§8.6). The settling observation records
+  `observedBy: "push" | "poll"` in `details` and on the record.
+- The hub closes on settle, cancel/kill, retention cleanup, stale reconciliation, and
+  `session_shutdown`. `wakeOnSettle: false` constructs no hub at all and is
+  byte-identical to the poll-only behaviour.
+- Observability: `/hc-subagents config` appends one bounded `settle hints:` line
+  (`mode`, `hints`, `wakes`, `falseWakes`, `stale`, `dup`, `reconnects`, `degraded`), and
+  the intertool `status` event carries the same per-child counters as an optional
+  `wake` field (§19.4). Neither contains task or result text.
 - On state transition to `completed`/`failed`/`cancelled`/`blocked`/`exited`, emit an intertool event.
 - On terminal outcome:
   1. Parse/publish result.
@@ -1392,6 +1413,10 @@ Actions (keep MVP small):
 
 - Use `ctx.ui.select` for interactive selection when no id is provided and UI is available.
 - In RPC/print mode, use plain text output via `ctx.ui.notify` (or return text) rather than interactive dialogs.
+- `config` also appends one bounded `settle hints:` line
+  (`mode=push|poll hints=… wakes=… falseWakes=… stale=… dup=… reconnects=… degraded=…`)
+  aggregated over the parent's children: no per-child detail, no task/result text, no
+  paths (§16.1).
 - Do not implement a dashboard/overlay in MVP.
 
 ### 17.4 Setup experience
@@ -1429,6 +1454,7 @@ export interface HcSubagentsConfig {
   startupTimeoutMs: number;
   waitTimeoutMs: number;
   pollIntervalMs: number;
+  wakeOnSettle: boolean;
   killOnAbort: boolean;
   killOnTimeout: boolean;
   monitorAfterReturn: boolean;
@@ -1461,6 +1487,7 @@ Default file contents:
   "startupTimeoutMs": 60000,
   "waitTimeoutMs": 600000,
   "pollIntervalMs": 750,
+  "wakeOnSettle": true,             // private-pipe settle hints; false = poll-only
   "killOnAbort": true,
   "killOnTimeout": false,
   "monitorAfterReturn": false,
@@ -1491,6 +1518,7 @@ Env overrides (all optional):
 | `PI_HC_SUBAGENTS_WAIT_TIMEOUT_MS` | `waitTimeoutMs` |
 | `PI_HC_SUBAGENTS_STARTUP_TIMEOUT_MS` | `startupTimeoutMs` |
 | `PI_HC_SUBAGENTS_POLL_MS` | `pollIntervalMs` |
+| `PI_HC_SUBAGENTS_WAKE_ON_SETTLE` | `wakeOnSettle` (`1`/`true`/`0`/`false`; anything else warns and keeps the default) |
 | `PI_HC_SUBAGENTS_AGENT_SCOPE` | `agentScope` |
 | `PI_HC_SUBAGENTS_SOCKET` | `hc.socketPath` (absolute; external parent) |
 | `PI_HC_SUBAGENTS_PARENT_TERMINAL` | `hc.parentTerminal` (anchor terminal) |
@@ -1732,7 +1760,13 @@ interface BaseEvent {
 
 type SubagentEvent =
   | (BaseEvent & { type: "spawned" })
-  | (BaseEvent & { type: "status"; coreStatus: string; previousState: SubagentState })
+  | (BaseEvent & {
+      type: "status";
+      coreStatus: string;
+      previousState: SubagentState;
+      /** Additive v1 field: bounded settle-hint counters, never task/result text. */
+      wake?: SettleHintWakeSummary;
+    })
   | (BaseEvent & { type: "blocked"; kind?: string; message?: string })
   | (BaseEvent & { type: "settled"; outcome: TurnOutcome; resultPath: string })
   | (BaseEvent & { type: "failed"; outcome: TurnOutcome; error: string })
@@ -1743,6 +1777,7 @@ Rules:
 
 - Emit after persistence/result publication, so a consumer reacting to `settled` can read `result.json`.
 - Include no task/result text by default. `includeTaskPreview: true` MAY add `taskPreview` (first 200 chars) to `spawned`.
+- `status` MAY carry `wake?: { mode: "push" | "poll"; hints; wakes; falseWakes; staleDrops; duplicateDrops; reconnects; degraded }` — the bounded per-child counters from §16.1. The field is omitted (not `null`) when `wakeOnSettle` is false or the child has no hub, so consumers MUST feature-detect it. Its presence is additive within v1.
 - Events are best-effort; a throwing subscriber MUST NOT break the producer. Wrap each listener in try/catch and log once.
 - `seq` MUST be strictly increasing per service. Consumers MUST tolerate gaps after a missed event? In-process bus is synchronous; if a consumer subscribes late, it should call `list()` to reconcile. Document that events are not replayed.
 - Event delivery order per child: `spawned` before `status`/`blocked`/`settled`; `removed` last.
@@ -1863,7 +1898,7 @@ Sources are merged by name with precedence; project/user/package built-ins are i
 
 #### Private pipe protocol (Milestone 3)
 
-The pipe transport is optional until M3. When implemented:
+The pipe transport ships with Milestone 3 children (`child.ts` via `-e`):
 
 - Pipe name: `pi-hc-<sha256(parentCwd).slice(0,16)>-<childId>`; Unix path
   `/tmp/<name>.sock`; Windows `\\.\pipe\<name>` (M4). Keep it short for `sun_path`.
@@ -1891,10 +1926,22 @@ The pipe transport is optional until M3. When implemented:
   - `follow_up` while streaming: `pi.sendUserMessage(text, { deliverAs: "steer" })`;
   - `follow_up` when idle: `pi.sendUserMessage(text, { triggerTurn: true })`.
   - If the child is `blocked`, return `error` with `kind`; never force.
-- On `agent_settled`, the child extension MAY push
-  `{"type":"settled","turn":N,"status":"completed|failed|aborted","text":"...","sessionFile":"..."}`.
-  The parent MUST still treat the session JSONL as authoritative and use the push only
-  as a wake-up hint.
+- On `agent_settled`, the child extension broadcasts this v1 notification frame on its
+  private pipe:
+
+  ```json
+  {"type":"settled","v":1,"turn":N,"status":"completed|failed|aborted","sessionFile":"...","at":"2026-11-21T00:00:00.000Z"}
+  ```
+
+  The frame carries no result text: it is a wake-up hint, and the parent MUST still treat
+  the session JSONL as authoritative. `turn` is the child's real terminal turn; `turn: 0`
+  means "unknown" and never triggers a stale drop. `at` is stamped by the child clock and
+  is only used for coarse staleness checks. The parent validates strictly: an unknown
+  version or malformed frame ends that subscription without a wake (poll-only). Notifications are one-way on a long-lived
+  subscriber with capped reconnect backoff (500 ms, 1 s, 2 s, 5 s, 10 s, cap 30 s; at most
+  6 attempts) and never carry requests; a response-shaped frame with a string `id` is
+  ignored. A dropped notification channel is not evidence that the child died: fall back
+  to `terminal.get` before any terminal decision (§8.6).
 - The pipe is local-user-only: mode `0600`/socket permissions; no TCP. Delete stale
   socket files on bind failure, as pier does.
 - The pipe is never a replacement for `hc` status: status still comes from pi/OSC 7501.

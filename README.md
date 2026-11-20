@@ -174,8 +174,18 @@ Relevant M2 keys: `defaultMode`, `notify`, `retentionDays`, `intertool.exposeSer
 `intertool.emitEvents`, `intertool.includeTaskPreview`, `hc.socketPath`,
 `hc.parentTerminal`, and the existing concurrency, polling, and timeout values.
 
-`wakeOnSettle` (default `true`, override with `PI_HC_SUBAGENTS_WAKE_ON_SETTLE`) lets a
-settled child wake its waiter; set it to `false` for poll-only behaviour.
+### Latency
+
+`wakeOnSettle` (default `true`, override with `PI_HC_SUBAGENTS_WAKE_ON_SETTLE=0`) lets a
+settled child wake its waiter. The child broadcasts a versioned `settled` frame over
+its private pipe; the parent wakes the wait, re-reads `terminal.get`, and the state
+machine still decides. Polling stays authoritative — a hint only shortens the wait, so a
+lost, late, or duplicate hint costs at most one `pollIntervalMs` (750 ms by default), and
+a disconnected channel degrades to polling rather than implying the child died.
+`wakeOnSettle: false` creates no hint subscription at all and is plain polling.
+`/hc-subagents config` appends a bounded `settle hints:` line
+(`mode=push|poll hints=… wakes=… falseWakes=… stale=… dup=… reconnects=… degraded=…`), so you can tell
+from the parent whether a run is being settled by push or by poll.
 
 ## Agents
 

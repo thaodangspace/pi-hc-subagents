@@ -10,6 +10,9 @@ import {
   serviceFrom,
 } from "../../src/intertool/service.ts";
 import { EventPublisher, type SubagentEvent } from "../../src/intertool/events.ts";
+import type { PipeNotification } from "../../src/child/pipe-protocol.ts";
+import type { NotificationSubscriptionState } from "../../src/child/pipe-transport.ts";
+import { SettleHintHub, type SettleHintTransportInput } from "../../src/runtime/settle-hints.ts";
 import { Registry } from "../../src/runtime/registry.ts";
 import { Scheduler } from "../../src/runtime/scheduler.ts";
 import type { SubagentRecord } from "../../src/runtime/types.ts";
@@ -232,4 +235,127 @@ test("agent sources can be registered and removed", () => {
   assert.deepEqual(session.agentSources?.map((entry) => entry.id), ["test-source"]);
   off();
   assert.deepEqual(session.agentSources, []);
+});
+
+function settlementSubscription(): {
+  subscription: {
+    path: string;
+    state: NotificationSubscriptionState;
+    reconnects: number;
+    lastError: null;
+    close(): void;
+  };
+  transport(input: SettleHintTransportInput): typeof subscription;
+  fire(overrides?: Partial<PipeNotification>): void;
+} {
+  let input: SettleHintTransportInput | undefined;
+  const subscription = {
+    path: "/tmp/pi-hc-tests/fake.sock",
+    state: "open" as NotificationSubscriptionState,
+    reconnects: 0,
+    lastError: null,
+    close() {
+      subscription.state = "closed";
+    },
+  };
+  return {
+    subscription,
+    transport(value: SettleHintTransportInput) {
+      input = value;
+      return subscription;
+    },
+    fire(overrides = {}) {
+      input?.onSettled({
+        type: "settled",
+        v: 1,
+        turn: 2,
+        status: "completed",
+        at: "2026-11-21T00:00:00.000Z",
+        ...overrides,
+      });
+    },
+  };
+}
+
+test("status events carry an additive bounded wake summary", () => {
+  const registry = new Registry();
+  registry.create(record({ turns: [{ index: 1, task: "SECRET TASK", startedAt: "2026-11-20T12:00:00.000Z", baselineTurn: 0, state: "running", terminal: "t12" }] }));
+  const session = fakeSession(registry);
+
+  const transport = settlementSubscription();
+  const hub = new SettleHintHub({ transport: transport.transport });
+  session.settleHints = hub;
+  assert.equal(hub.start("child-1", "pi-hc-0123456789abcdef-child-1"), true);
+  transport.fire();
+
+  const service = new IntertoolServiceV1({
+    session,
+    exposeService: true,
+    emitEvents: true,
+    includeTaskPreview: false,
+  });
+  const events: SubagentEvent[] = [];
+  service.subscribe((event) => events.push(event));
+  service.emitStatus(registry.all()[0] as SubagentRecord, "starting");
+
+  assert.equal(events.length, 1);
+  const event = events[0] as SubagentEvent & { wake?: unknown };
+  assert.equal(event.version, 1);
+  assert.equal(event.type, "status");
+  assert.equal(event.seq, 1);
+  assert.equal(event.childId, "child-1");
+  assert.equal(event.runId, "run-1");
+  assert.equal(event.agent, "reviewer");
+  assert.equal(event.terminal, "t12");
+  assert.equal(event.state, "working");
+  assert.equal(event.turn, 1);
+  assert.equal(event.coreStatus, "working");
+  assert.equal(event.previousState, "starting");
+  assert.deepEqual(event.wake, {
+    mode: "push",
+    hints: 1,
+    wakes: 0,
+    falseWakes: 0,
+    staleDrops: 0,
+    duplicateDrops: 0,
+    reconnects: 0,
+    degraded: false,
+  });
+
+  const wakeJson = JSON.stringify(event.wake);
+  for (const forbidden of ['"text"', '"task"', '"prompt"', "child-1", "/tmp", "/runs"]) {
+    assert.equal(wakeJson.includes(forbidden), false, `wake summary must not carry ${forbidden}`);
+  }
+  assert.equal(Object.hasOwn(event, "task"), false);
+  assert.equal(Object.hasOwn(event, "text"), false);
+});
+
+test("status events omit the wake field entirely without a hub", () => {
+  const registry = new Registry();
+  registry.create(record());
+  const session = fakeSession(registry);
+  assert.equal(session.settleHints, undefined);
+
+  const service = new IntertoolServiceV1({
+    session,
+    exposeService: true,
+    emitEvents: true,
+    includeTaskPreview: false,
+  });
+  const events: SubagentEvent[] = [];
+  service.subscribe((event) => events.push(event));
+  service.emitStatus(registry.all()[0] as SubagentRecord, "working");
+
+  const event = events[0] as SubagentEvent & { wake?: unknown };
+  assert.equal(event.type, "status");
+  assert.equal(Object.hasOwn(event, "wake"), false);
+  assert.equal(JSON.stringify(event).includes('"wake"'), false);
+});
+
+test("publisher.status() still works without the optional wake argument", () => {
+  const publisher = new EventPublisher({ enabled: () => true, includeTaskPreview: () => false });
+  const event = publisher.status(record(), "working");
+  assert.ok(event);
+  assert.equal(event.type, "status");
+  assert.equal(Object.hasOwn(event, "wake"), false);
 });

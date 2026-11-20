@@ -34,6 +34,7 @@ import {
   turnStartedAtMsFor,
   waitForRecord,
 } from "../runtime/run-ops.ts";
+import { wakeSummary } from "../runtime/settle-hints.ts";
 import type { SubagentRecord, SubagentState, TurnOutcome, TurnState } from "../runtime/types.ts";
 import { updateCurrentTurns } from "../runtime/types.ts";
 import type { ToolSession } from "../tools/session.ts";
@@ -565,7 +566,11 @@ export class IntertoolServiceV1 implements HcSubagentsService {
   /** Monitor hook: a child changed working/starting state. */
   emitStatus(record: SubagentRecord, previousState: SubagentState): void {
     if (this.#disposed) return;
-    this.#events.status(record, previousState);
+    this.#events.status(
+      record,
+      previousState,
+      wakeSummary(this.#session.settleHints, record.childId, this.#session.runtime.config.wakeOnSettle),
+    );
   }
 
   /** One blocked event per episode, even if several callers observe it. */

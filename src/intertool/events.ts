@@ -5,6 +5,7 @@
  * (except the explicit `taskPreview` opt-in on `spawned`). Listener failures
  * are isolated so one broken subscriber cannot break the producer.
  */
+import type { SettleHintWakeSummary } from "../runtime/settle-hints.ts";
 import type { SubagentRecord, SubagentState, TurnOutcome } from "../runtime/types.ts";
 
 export const EVENT_NAMESPACE = "hc-subagents";
@@ -26,7 +27,13 @@ export interface SubagentEventBase {
 
 export type SubagentEvent =
   | (SubagentEventBase & { type: "spawned"; taskPreview?: string })
-  | (SubagentEventBase & { type: "status"; coreStatus: string; previousState: SubagentState })
+  | (SubagentEventBase & {
+      type: "status";
+      coreStatus: string;
+      previousState: SubagentState;
+      /** Additive v1 field: bounded hint counters, never task/result text. */
+      wake?: SettleHintWakeSummary;
+    })
   | (SubagentEventBase & { type: "blocked"; kind?: string; message?: string })
   | (SubagentEventBase & { type: "settled"; outcome: TurnOutcome; resultPath: string })
   | (SubagentEventBase & { type: "failed"; outcome: TurnOutcome; error: string })
@@ -84,8 +91,18 @@ export class EventPublisher {
     return this.#emit({ ...baseOf(record), type: "spawned", ...extra });
   }
 
-  status(record: SubagentRecord, previousState: SubagentState): SubagentEvent | null {
-    return this.#emit({ ...baseOf(record), type: "status", coreStatus: record.coreStatus, previousState });
+  status(
+    record: SubagentRecord,
+    previousState: SubagentState,
+    wake?: SettleHintWakeSummary,
+  ): SubagentEvent | null {
+    return this.#emit({
+      ...baseOf(record),
+      type: "status",
+      coreStatus: record.coreStatus,
+      previousState,
+      ...(wake === undefined ? {} : { wake }),
+    });
   }
 
   blocked(record: SubagentRecord, kind?: string | null, message?: string | null): SubagentEvent | null {

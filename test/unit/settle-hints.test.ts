@@ -15,8 +15,10 @@ import {
   MAX_SETTLE_HINT_LISTENERS,
   MAX_SETTLE_HINT_SEEN,
   SettleHintHub,
+  formatSettleHintSummary,
   type SettleHint,
   wakeSourceFor,
+  wakeSummary,
   type SettleHintTransportInput,
 } from "../../src/runtime/settle-hints.ts";
 
@@ -528,4 +530,167 @@ test("wakeSourceFor() forwards hints, stats, false wakes, and stale wakes for a 
   fake.only().emit({ turn: 4 });
   assert.equal(seen.hints.length, 1);
   assert.equal(source.stats?.()?.listeners, 0);
+});
+
+test("wakeSummary() is undefined without a hub or when the feature is disabled", () => {
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  hub.start("child-1", "pi-hc-0123456789abcdef-child-1");
+
+  assert.equal(wakeSummary(undefined, "child-1", true), undefined);
+  assert.equal(wakeSummary(hub, "child-1", false), undefined);
+});
+
+test("wakeSummary() reports poll counters as zero for a child without a snapshot", () => {
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+
+  assert.deepEqual(wakeSummary(hub, "unknown-child", true), {
+    mode: "poll",
+    hints: 0,
+    wakes: 0,
+    falseWakes: 0,
+    staleDrops: 0,
+    duplicateDrops: 0,
+    reconnects: 0,
+    degraded: false,
+  });
+});
+
+test("wakeSummary() is push for a live episode and poll for a closed one", () => {
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  hub.start("child-1", "pi-hc-0123456789abcdef-child-1");
+
+  // A started (connecting) episode is push-capable even before any frame.
+  assert.equal(hub.stats("child-1")?.state, "connecting");
+  assert.equal(wakeSummary(hub, "child-1", true)?.mode, "push");
+
+  fake.only().emit();
+  assert.equal(wakeSummary(hub, "child-1", true)?.mode, "push");
+
+  hub.close("child-1");
+  const closed = wakeSummary(hub, "child-1", true);
+  assert.equal(closed?.mode, "poll");
+  assert.equal(closed?.hints, 1);
+  assert.equal(closed?.wakes, 0);
+});
+
+test("wakeSummary() clamps counters to non-negative integers and takes degraded from stats", () => {
+  const stub = {
+    stats: () => ({
+      childId: "child-1",
+      state: "degraded" as const,
+      hints: -4,
+      wakes: 2.9,
+      falseWakes: Number.NaN,
+      staleDrops: -0.5,
+      duplicateDrops: 3.2,
+      listenerErrors: 0,
+      listenerDrops: 0,
+      duplicateStarts: 0,
+      listeners: 0,
+      reconnects: -1,
+      degraded: true,
+    }),
+  } as unknown as SettleHintHub;
+
+  assert.deepEqual(wakeSummary(stub, "child-1", true), {
+    mode: "push",
+    hints: 0,
+    wakes: 2,
+    falseWakes: 0,
+    staleDrops: 0,
+    duplicateDrops: 3,
+    reconnects: 0,
+    degraded: true,
+  });
+});
+
+test("formatSettleHintSummary() prints one exact bounded line for an empty or disabled hub", () => {
+  const zeroLine = "settle hints: mode=poll hints=0 wakes=0 falseWakes=0 stale=0 dup=0 reconnects=0 degraded=false";
+  assert.equal(formatSettleHintSummary(undefined, false, []), zeroLine);
+  assert.equal(formatSettleHintSummary(undefined, true, ["child-1"]), zeroLine);
+
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  assert.equal(
+    formatSettleHintSummary(hub, false, []),
+    zeroLine,
+  );
+  assert.equal(
+    formatSettleHintSummary(hub, true, []),
+    "settle hints: mode=push hints=0 wakes=0 falseWakes=0 stale=0 dup=0 reconnects=0 degraded=false",
+  );
+});
+
+test("formatSettleHintSummary() aggregates two children and marks degraded once", () => {
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  hub.start("child-1", "pi-hc-0123456789abcdef-child-1");
+  hub.start("child-2", "pi-hc-0123456789abcdef-child-2");
+  const [first, second] = fake.subscriptions;
+  assert.ok(first);
+  assert.ok(second);
+
+  hub.onSettled("child-1", () => {});
+  first.emit({ turn: 2 });
+  first.emit({ turn: 3 });
+  first.emit({ turn: 3 }); // duplicate
+  first.reconnect(1, 500);
+  first.reconnect(2, 1000);
+  hub.noteFalseWake("child-1");
+  hub.noteStaleWake("child-1");
+
+  hub.onSettled("child-2", () => {});
+  hub.onSettled("child-2", () => {});
+  second.emit({ turn: 9 });
+  second.reconnect(1, 500);
+  second.degrade();
+
+  assert.equal(
+    formatSettleHintSummary(hub, true, ["child-1", "child-2"]),
+    "settle hints: mode=push hints=3 wakes=4 falseWakes=1 stale=1 dup=1 reconnects=3 degraded=true",
+  );
+});
+
+test("formatSettleHintSummary() switches from push to poll with the feature off", () => {
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  hub.start("child-1", "pi-hc-0123456789abcdef-child-1");
+
+  assert.match(formatSettleHintSummary(hub, true, ["child-1"]), /^settle hints: mode=push /);
+  const poll = formatSettleHintSummary(hub, false, ["child-1"]);
+  assert.equal(
+    poll,
+    "settle hints: mode=poll hints=0 wakes=0 falseWakes=0 stale=0 dup=0 reconnects=0 degraded=false",
+  );
+});
+
+test("formatSettleHintSummary() counts a duplicated child id once", () => {
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  hub.start("child-1", "pi-hc-0123456789abcdef-child-1");
+  hub.onSettled("child-1", () => {});
+  fake.only().emit();
+
+  const once = formatSettleHintSummary(hub, true, ["child-1"]);
+  assert.equal(formatSettleHintSummary(hub, true, ["child-1", "child-1", "child-1"]), once);
+  assert.match(once, /hints=1 wakes=1 /);
+});
+
+test("formatSettleHintSummary() stays one bounded line without text, ids, or paths", () => {
+  const fake = fakeTransport();
+  const hub = new SettleHintHub({ transport: fake.transport });
+  hub.start("child-secret-1", "pi-hc-0123456789abcdef-child-1");
+  hub.onSettled("child-secret-1", () => {});
+  fake.only().emit({ sessionFile: "/tmp/pi-hc-tests/secret-session.jsonl" });
+
+  const line = formatSettleHintSummary(hub, true, ["child-secret-1"]);
+  assert.equal(line.includes("\n"), false);
+  assert.ok(line.length < 200, `summary line is ${line.length} chars`);
+  assert.match(line, /^settle hints: mode=push hints=1 wakes=1 falseWakes=0 stale=0 dup=0 reconnects=0 degraded=false$/);
+  for (const forbidden of ['"text"', '"task"', '"prompt"', "child-secret-1", "/tmp", ".jsonl", "secret"]) {
+    assert.equal(line.includes(forbidden), false, `summary must not contain ${forbidden}`);
+  }
 });

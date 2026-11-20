@@ -11,6 +11,7 @@ import { formatDuration } from "../runtime/result-format.ts";
 import { resolveChildId } from "../runtime/id-resolve.ts";
 import { readResultFile } from "../runtime/result-store.ts";
 import { cancelRecord } from "../runtime/run-ops.ts";
+import { formatSettleHintSummary } from "../runtime/settle-hints.ts";
 import type { SubagentRecord } from "../runtime/types.ts";
 import type { ExtensionRuntime } from "../runtime/runtime.ts";
 import { setupMessage } from "../runtime/setup-mode.ts";
@@ -113,7 +114,16 @@ export function registerHcSubagentsCommand(pi: ExtensionAPI, deps: CommandDeps):
           "retentionDays": String(runtime.config.retentionDays),
           "intertool.exposeService": String(runtime.config.intertool.exposeService),
         });
-        ctx.ui.notify(diagnostics, "info");
+        const childIds =
+          session?.registry
+            .listForParent(runtime.parentSessionId, { includeFinished: true })
+            .map((record) => record.childId) ?? [];
+        const settleSummary = formatSettleHintSummary(
+          session?.settleHints,
+          runtime.config.wakeOnSettle,
+          childIds,
+        );
+        ctx.ui.notify(`${diagnostics}\n${settleSummary}`, "info");
         return;
       }
 
