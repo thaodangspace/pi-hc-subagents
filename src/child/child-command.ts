@@ -18,6 +18,20 @@ export const MAX_TASK_BYTES = 256 * 1024;
 export const MAX_SYSTEM_BYTES = 128 * 1024;
 export const HC_TOOL_NAMES = ["hc_subagent", "hc_subagent_control"] as const;
 
+/**
+ * hc merges per-terminal env over the core environment, so omission alone
+ * cannot remove inherited values. Empty strings clear parent-specific
+ * variables; pi treats them as unset.
+ */
+const CLEARED_CHILD_ENV = [
+  "PI_MODEL",
+  "PI_PROVIDER",
+  "PI_REASONING_LEVEL",
+  "PI_SESSION_ID",
+  "PI_SESSION_FILE",
+  "PI_HC_PIPE",
+] as const;
+
 export interface SpawnPlanTrust {
   projectTrusted: boolean;
   parentCwd: string;
@@ -56,8 +70,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isCwdInside(parentCwd: string, childCwd: string): boolean {
-  const parent = path.resolve(parentCwd);
-  const child = path.resolve(childCwd);
+  const canonical = (value: string): string => {
+    try {
+      return fs.realpathSync(value);
+    } catch {
+      return path.resolve(value);
+    }
+  };
+  const parent = canonical(parentCwd);
+  const child = canonical(childCwd);
   const relative = path.relative(parent, child);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
@@ -97,10 +118,11 @@ function buildChildEnv(parentEnv: NodeJS.ProcessEnv, markers: Record<string, str
     if (key === "PI_HC_PIPE") continue;
     env[key] = value;
   }
+  for (const key of CLEARED_CHILD_ENV) env[key] = "";
   return { ...env, ...markers };
 }
 
-function validateCwd(cwd: string): void {
+function resolveExistingCwd(cwd: string): string {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(cwd);
@@ -110,14 +132,18 @@ function validateCwd(cwd: string): void {
   if (!stat.isDirectory()) {
     throw new HcSubagentError("validation", `cwd is not a directory: ${cwd}`);
   }
+  try {
+    return fs.realpathSync(cwd);
+  } catch {
+    return path.resolve(cwd);
+  }
 }
 
 export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
   const env = input.env ?? process.env;
-  const cwd = path.resolve(input.cwd);
   if (!isRecord(input.agent)) throw new HcSubagentError("validation", "agent definition is missing");
   validateAgentForSpawn(input.agent, { trusted: input.trust.projectTrusted });
-  validateCwd(cwd);
+  const cwd = resolveExistingCwd(input.cwd);
 
   if (input.agent.source === "project" && (input.agent.extensions?.length ?? 0) > 0 && !input.trust.projectTrusted) {
     throw new HcSubagentError(

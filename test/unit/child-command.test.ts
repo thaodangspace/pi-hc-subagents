@@ -203,7 +203,8 @@ test("child environment filters hc and stale session metadata but keeps credenti
       "PI_REASONING_LEVEL",
       "PI_HC_PIPE",
     ]) {
-      assert.equal(plan.env[removed], undefined, `${removed} should be removed`);
+      const value = plan.env[removed];
+      assert.ok(value === undefined || value === "", `${removed} should be cleared`);
     }
     assert.equal(plan.env.PI_HC_SUBAGENT, "1");
     assert.equal(plan.env.PI_HC_RUN_ID, "20261120T034008Z-a1b2c3");
