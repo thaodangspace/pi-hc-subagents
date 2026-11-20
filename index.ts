@@ -8,22 +8,23 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatConfigDiagnostics } from "./src/config/config.ts";
 import { Registry } from "./src/runtime/registry.ts";
 import { Scheduler } from "./src/runtime/scheduler.ts";
-import { type ExtensionRuntime, createRuntime, runtimeDiagnostics } from "./src/runtime/runtime.ts";
+import { type ExtensionRuntime, createRuntime } from "./src/runtime/runtime.ts";
 import { setupMessage, setupNotification } from "./src/runtime/setup-mode.ts";
 import { formatDuration } from "./src/runtime/result-format.ts";
+import { shutdownOwnedChildren } from "./src/runtime/lifecycle.ts";
+import { registerControlTool } from "./src/tools/control-tool.ts";
 import { registerSpawnTool } from "./src/tools/spawn-tool.ts";
 import type { ToolSession } from "./src/tools/session.ts";
 
 const COMMAND_NAME = "hc-subagents";
 
 const HELP_TEXT = [
-  "Usage: /hc-subagents [list|config|attach <id>|result <id>|kill <id>]",
+  "Usage: /hc-subagents [list|config]",
   "",
   "list    current children (default)",
   "config  effective configuration and agent directories",
-  "attach  print the hc attach command for a child",
-  "result  print a child's final result",
-  "kill    end a child terminal",
+  "",
+  "Use hc_subagent_control for attach/result/kill actions.",
 ].join("\n");
 
 export default function hcSubagentsExtension(pi: ExtensionAPI): void {
@@ -117,7 +118,8 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
         }),
       };
       if (!toolsRegistered) {
-        registerSpawnTool(pi, () => toolSession);
+        registerSpawnTool(pi, () => toolSession, { exposure: runtime.config.exposure });
+        registerControlTool(pi, () => toolSession, { exposure: runtime.config.exposure });
         toolsRegistered = true;
       }
     } else {
@@ -128,8 +130,13 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async () => {
-    // Lifecycle cleanup arrives in phase 8.
+    const current = toolSession;
     toolSession = null;
     runtime = null;
+    if (current) {
+      // Kill every child this parent started; hc parent relation is the second
+      // line of defense if this handler cannot run.
+      await shutdownOwnedChildren(current).catch(() => {});
+    }
   });
 }

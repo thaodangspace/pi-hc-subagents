@@ -186,6 +186,7 @@ export interface CreateRecordOptions {
   background?: boolean;
   now?: () => Date;
   baselineTurn?: number;
+  turnStartedAtMs?: number;
 }
 
 export function createSubagentRecord(
@@ -193,7 +194,8 @@ export function createSubagentRecord(
   terminal: Awaited<ReturnType<CoreClient["run"]>>,
   options: CreateRecordOptions,
 ): SubagentRecord {
-  const now = (options.now?.() ?? new Date()).toISOString();
+  const nowDate = options.now?.() ?? new Date();
+  const now = nowDate.toISOString();
   const baselineTurn = options.baselineTurn ?? terminal.turn;
   return {
     version: 1,
@@ -208,6 +210,8 @@ export function createSubagentRecord(
     terminalName: terminal.name ?? plan.paths.terminalName,
     sessionId: plan.paths.childId,
     sessionFile: null,
+    runDir: plan.paths.runDir,
+    resultFile: plan.paths.resultFile,
     ...(plan.agent.model === undefined ? {} : { model: plan.agent.model }),
     ...(plan.agent.thinking === undefined ? {} : { thinking: plan.agent.thinking }),
     state: "starting",
@@ -220,6 +224,7 @@ export function createSubagentRecord(
         index: 1,
         task: plan.task,
         startedAt: now,
+        startedAtMs: options.turnStartedAtMs ?? nowDate.getTime(),
         baselineTurn,
         state: "running",
         terminal: terminal.address,

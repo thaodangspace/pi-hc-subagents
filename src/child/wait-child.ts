@@ -53,7 +53,14 @@ export async function waitForChild(options: WaitChildOptions): Promise<WaitOutco
       }
       if (normalized.code === "not_found") return { kind: "terminal_lost" };
       if (normalized.code !== "unavailable" && normalized.code !== "timeout") throw normalized;
-      // A transient core disconnect does not mean the child died.
+      // A transient core disconnect does not mean the child died, but the
+      // overall wait deadline still applies.
+      const deadline = options.machine.deadlineTransition();
+      if (deadline?.type === "startup_timeout") return { kind: "startup_timeout", terminal: lastTerminal };
+      if (deadline?.type === "wait_timeout") return { kind: "wait_timeout", terminal: lastTerminal };
+      if (deadline?.type === "cancelled") {
+        return { kind: "cancelled", terminal: lastTerminal, reason: deadline.reason };
+      }
       await sleep(Math.min(pollMs, UNAVAILABLE_RETRY_MS));
       continue;
     }

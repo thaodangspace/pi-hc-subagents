@@ -12,6 +12,10 @@ export interface StateMachineOptions {
   baselineTurn: number;
   startupTimeoutMs: number;
   waitTimeoutMs: number;
+  /** Control wait on an already-started turn begins in `working`. */
+  initialPhase?: "starting" | "working";
+  /** Unix ms when the current turn started; defaults to now. */
+  startedAtMs?: number;
   now?: () => number;
 }
 
@@ -58,9 +62,14 @@ export class ChildStateMachine {
     this.startupTimeoutMs = options.startupTimeoutMs;
     this.waitTimeoutMs = options.waitTimeoutMs;
     this.#now = options.now ?? (() => Date.now());
-    this.startedAtMs = this.#now();
+    this.startedAtMs = options.startedAtMs ?? this.#now();
     this.#startupDeadlineMs = this.startedAtMs + options.startupTimeoutMs;
     this.#waitDeadlineMs = this.startedAtMs + options.waitTimeoutMs;
+    if (options.initialPhase === "working") {
+      this.#phase = "working";
+      this.#sawWorking = true;
+      this.#workStartedAtMs = this.startedAtMs;
+    }
   }
 
   get phase(): MachinePhase {
@@ -94,6 +103,19 @@ export class ChildStateMachine {
     const transition = this.#evaluate(observation, now);
     this.#lastTransition = transition;
     return transition;
+  }
+
+  /**
+   * Deadline check for periods with no successful observation (for example a
+   * temporary core disconnect). Never times out a blocked child.
+   */
+  deadlineTransition(now = this.#now()): Transition | null {
+    if (this.#cancelled) return { type: "cancelled", reason: this.#cancelled.reason };
+    if (this.#phase === "blocked") return null;
+    if (this.#phase === "starting") {
+      return now >= this.#startupDeadlineMs ? { type: "startup_timeout" } : null;
+    }
+    return now >= this.#waitDeadlineMs ? { type: "wait_timeout" } : null;
   }
 
   #evaluate(observation: TerminalObservation, now: number): Transition {

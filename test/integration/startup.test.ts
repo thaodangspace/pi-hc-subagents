@@ -48,3 +48,62 @@ test("createRuntime selects setup mode outside hc", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("inside hc, session_start registers both tools; shutdown clears them", { skip: !available }, async () => {
+  const isolated = await startIsolatedHc();
+  const agentDir = await mkdtemp(path.join("/tmp", "hcr-"));
+  const saved = {
+    terminalId: process.env.HC_TERMINAL_ID,
+    socket: process.env.HC_TERMINAL_SOCKET,
+    agentDir: process.env.PI_CODING_AGENT_DIR,
+    subagent: process.env.PI_HC_SUBAGENT,
+  };
+  try {
+    process.env.HC_TERMINAL_ID = isolated.env.HC_TERMINAL_ID;
+    process.env.HC_TERMINAL_SOCKET = isolated.env.HC_TERMINAL_SOCKET;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    delete process.env.PI_HC_SUBAGENT;
+
+    const handlers = new Map<string, (...args: any[]) => any>();
+    const tools: string[] = [];
+    const pi = {
+      on(name: string, handler: (...args: any[]) => any) {
+        handlers.set(name, handler);
+        return () => {};
+      },
+      registerTool(definition: { name: string }) {
+        tools.push(definition.name);
+      },
+      registerCommand() {},
+      registerMessageRenderer() {},
+      appendEntry() {},
+      sendMessage() {},
+    };
+    const hcSubagentsExtension = (await import("../../index.ts")).default;
+    hcSubagentsExtension(pi as any);
+    const notifications: string[] = [];
+    const ctx = {
+      cwd: isolated.root,
+      hasUI: false,
+      ui: { notify: (message: string) => notifications.push(message) },
+      isProjectTrusted: () => true,
+      sessionManager: { getSessionId: () => "it-wiring-session" },
+    };
+    await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+    assert.deepEqual(tools.sort(), ["hc_subagent", "hc_subagent_control"]);
+    assert.deepEqual(notifications, []);
+    await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+  } finally {
+    for (const [key, value] of [
+      ["HC_TERMINAL_ID", saved.terminalId],
+      ["HC_TERMINAL_SOCKET", saved.socket],
+      ["PI_CODING_AGENT_DIR", saved.agentDir],
+      ["PI_HC_SUBAGENT", saved.subagent],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(agentDir, { recursive: true, force: true });
+    await isolated.cleanup();
+  }
+});

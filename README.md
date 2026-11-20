@@ -56,3 +56,51 @@ npm test                 # unit tests (node:test)
 npm run test:contract    # pinned hc schema contract
 npm run test:integration # isolated hc core; skipped when hc is unavailable
 ```
+
+## Milestone 1 quickstart
+
+Install the package into pi, or load it explicitly while developing:
+
+```bash
+hc run --bg --name pi pi -e /absolute/path/to/pi-hc-subagents
+```
+
+Inside that terminal, the model can call:
+
+```text
+hc_subagent({
+  agent: "reviewer",
+  task: "Review src/parser.ts for correctness bugs. Report file:line findings.",
+  timeoutMs: 600000
+})
+```
+
+The result contains the child's final assistant text, usage, terminal address, and
+session path. If the child is blocked on a permission/auth/question dialog, the result
+says a human is required and prints `hc attach <terminal>`; the extension never answers
+the dialog.
+
+Built-in agents: `reviewer` and `scout` (read-only), `worker` (write-capable). User
+agents live in `~/.pi/agent/agents/*.md`; project agents in `.pi/agents/*.md` require a
+trusted project and an opt-in `agentScope`.
+
+Inspect children:
+
+```text
+hc_subagent_control({ action: "list" })
+hc_subagent_control({ action: "wait", id: "<slug>" })
+hc_subagent_control({ action: "result", id: "<slug>" })
+hc_subagent_control({ action: "attach", id: "<slug>" })
+hc_subagent_control({ action: "output", id: "<slug>", lines: 60 })  # lossy debugging only
+```
+
+`/hc-subagents` lists children; `/hc-subagents config` prints the effective
+configuration, agent directories, and the detected hc version.
+
+## Safety invariants
+
+- Child output is labelled as untrusted data and is never executed.
+- The extension never sends `force` or answers a blocked dialog.
+- Children are parented to the parent terminal and are killed on parent shutdown.
+- Spawns use argv, never a shell line; task/system files are `0600`, run dirs `0700`.
+- Integration tests use an isolated `HC_SESSION` and scratch XDG paths.

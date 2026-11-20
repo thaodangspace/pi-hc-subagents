@@ -50,6 +50,8 @@ export interface TurnRecord {
   index: number;
   task: string;
   startedAt: string;
+  /** Unix ms recorded immediately before delivery; used by the parser. */
+  startedAtMs?: number;
   settledAt?: string;
   baselineTurn: number;
   state: TurnState;
@@ -76,6 +78,9 @@ export interface SubagentRecord {
   terminalName: string;
   sessionId: string;
   sessionFile: string | null;
+  /** Stable run-directory paths; internal, used by control/result retrieval. */
+  runDir?: string;
+  resultFile?: string;
   model?: string;
   thinking?: ThinkingLevel;
   state: SubagentState;

@@ -156,7 +156,7 @@ async function readScreenTail(session: ToolSession, terminal: string): Promise<s
   }
 }
 
-interface FinalizeOptions {
+export interface FinalizeOptions {
   session: ToolSession;
   record: SubagentRecord;
   terminal: TerminalRecord;
@@ -169,12 +169,12 @@ interface FinalizeOptions {
   parseError?: string;
 }
 
-interface FinalizeResult {
+export interface FinalizeResult {
   result: AgentToolResult<SubagentResultDetails>;
   record: SubagentRecord;
 }
 
-async function finalizeFromSession(options: FinalizeOptions): Promise<FinalizeResult> {
+export async function finalizeFromSession(options: FinalizeOptions): Promise<FinalizeResult> {
   const { session, record, terminal, parsed } = options;
   const now = new Date().toISOString();
 
@@ -330,9 +330,18 @@ async function finalizeFromSession(options: FinalizeOptions): Promise<FinalizeRe
   };
 }
 
-export function registerSpawnTool(pi: ExtensionAPI, getSession: () => ToolSession | null): void {
+export interface SpawnToolOptions {
+  exposure?: "direct" | "model-only";
+}
+
+export function registerSpawnTool(
+  pi: ExtensionAPI,
+  getSession: () => ToolSession | null,
+  options: SpawnToolOptions = {},
+): void {
   pi.registerTool({
     name: "hc_subagent",
+    ...(options.exposure === "model-only" ? { exposure: "model-only" as const } : {}),
     label: "HC Subagent",
     description:
       "Delegate a self-contained task to an interactive pi subagent in a herdr-core terminal and wait for its final result.",
@@ -476,6 +485,7 @@ export function registerSpawnTool(pi: ExtensionAPI, getSession: () => ToolSessio
             parentSessionId: runtime.parentSessionId,
             origin: "tool",
             now: () => new Date(),
+            turnStartedAtMs,
           }),
         );
 
