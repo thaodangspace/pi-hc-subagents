@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import childPipeExtension from "../../child.ts";
 import { HcSubagentError } from "../../src/core/error.ts";
-import { pipeNameFor, pipePathFor } from "../../src/child/pipe-protocol.ts";
+import { splitCompleteLines } from "../../src/core/jsonl.ts";
+import { NOTIFICATION_VERSION, decodePipeNotification, pipeNameFor, pipePathFor } from "../../src/child/pipe-protocol.ts";
 import { PipeClient } from "../../src/child/pipe-transport.ts";
 import { FakeHcServer } from "../fixtures/fake-hc-server.ts";
 
@@ -19,7 +21,12 @@ async function sleep(ms: number): Promise<void> {
 
 test("child.ts starts the pipe, labels the session, delivers safely, and never registers tools", async () => {
   const pipeName = pipeNameFor("/tmp/pi-hc-child-tests", `child-${randomBytes(6).toString("hex")}`);
-  const fakeHc = new FakeHcServer(() => ({ result: {} }));
+  const fakeHc = new FakeHcServer((method) => {
+    if (method === "terminal.get") {
+      return { result: { address: "t-child", state: "live", turn: 7 } };
+    }
+    return { result: {} };
+  });
   await fakeHc.start();
   process.env.PI_HC_SUBAGENT = "1";
   process.env.PI_HC_PIPE = pipeName;
@@ -75,6 +82,13 @@ test("child.ts starts the pipe, labels the session, delivers safely, and never r
   );
 
   const client = new PipeClient(pipePathFor(pipeName), { timeoutMs: 2000 });
+  const listener = net.createConnection(pipePathFor(pipeName));
+  let notifications = "";
+  listener.setEncoding("utf8");
+  listener.on("data", (chunk: string) => {
+    notifications += chunk;
+  });
+  listener.on("error", () => {});
   try {
     const pong = await client.ping();
     assert.equal(pong.version, 1);
@@ -103,11 +117,27 @@ test("child.ts starts the pipe, labels the session, delivers safely, and never r
     assert.ok(String(result.text).length > 0);
     assert.equal(sessionText.includes("assistant"), true);
 
+    await handlers.get("agent_settled")?.({ type: "agent_settled", aborted: false }, context);
+    await sleep(75);
+    const frames = splitCompleteLines(notifications).lines;
+    assert.equal(frames.length, 1, "one settled notification is broadcast per settle");
+    const frame = frames[0] ?? "";
+    const settled = decodePipeNotification(frame);
+    assert.equal(settled.type, "settled");
+    assert.equal(settled.v, NOTIFICATION_VERSION);
+    assert.equal(settled.turn, 7, "the frame carries the real terminal turn");
+    assert.equal(settled.status, "completed");
+    assert.equal(typeof settled.at, "string");
+    assert.equal(Number.isNaN(Date.parse(settled.at)), false, "at is an ISO timestamp");
+    assert.equal(settled.sessionFile, fixtureSession);
+    assert.equal("text" in settled, false, "the frame never carries result text");
+
     await client.shutdown();
     await new Promise((resolve) => setTimeout(resolve, 150));
     assert.equal(shutdownRequested, 1);
     assert.equal(toolRegistrations, 0);
   } finally {
+    listener.destroy();
     await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, context);
     await fakeHc.stop();
     delete process.env.PI_HC_SUBAGENT;

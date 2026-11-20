@@ -11,7 +11,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createCoreClient } from "./src/core/core-client.ts";
 import { parseSessionFile } from "./src/child/session-read.ts";
 import { PipeRequestError, startChildPipeServer, type ChildPipeServer } from "./src/child/pipe-server.ts";
-import { validatePipeName } from "./src/child/pipe-protocol.ts";
+import { NOTIFICATION_VERSION, validatePipeName } from "./src/child/pipe-protocol.ts";
 
 export default function childPipeExtension(pi: ExtensionAPI): void {
   const pipeName = process.env.PI_HC_PIPE ?? "";
@@ -144,14 +144,19 @@ export default function childPipeExtension(pi: ExtensionAPI): void {
     rememberContext(context);
   });
 
-  pi.on("agent_settled", (event) => {
+  pi.on("agent_settled", async (event) => {
     labelSession();
-    if (!server) return;
-    server.broadcast({
+    const running = server;
+    if (!running) return;
+    // `at` is child-clock and only used for coarse staleness; `turn` orders hints.
+    const at = new Date().toISOString();
+    running.broadcast({
       type: "settled",
-      turn: 0,
+      v: NOTIFICATION_VERSION,
+      turn: await terminalTurn(),
       status: event.aborted ? "aborted" : "completed",
       sessionFile: currentSessionFile(),
+      at,
     });
   });
 

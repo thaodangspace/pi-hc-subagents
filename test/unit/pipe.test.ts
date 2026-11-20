@@ -5,11 +5,16 @@ import test from "node:test";
 
 import { HcSubagentError } from "../../src/core/error.ts";
 import {
+  MAX_PIPE_FRAME_BYTES,
   MAX_PIPE_MESSAGE_BYTES,
+  MAX_PIPE_SESSION_FILE_BYTES,
+  NOTIFICATION_VERSION,
+  decodePipeNotification,
   decodePipeRequest,
   decodePipeResponse,
   encodeFrame,
   errorFrame,
+  isPipeNotification,
   pipeNameFor,
   pipePathFor,
   validatePipeName,
@@ -61,6 +66,61 @@ test("frames are bounded and validated", () => {
     message: "no",
     kind: "permission",
   });
+});
+
+test("settled notifications are versioned and strictly decoded", () => {
+  const frame = {
+    type: "settled",
+    v: NOTIFICATION_VERSION,
+    turn: 3,
+    status: "completed",
+    sessionFile: "/tmp/pi-hc/session.jsonl",
+    at: "2026-11-21T00:00:00.000Z",
+  };
+  const decoded = decodePipeNotification(encodeFrame(frame).trim());
+  assert.deepEqual(decoded, frame);
+  assert.equal(isPipeNotification(decoded), true);
+  assert.deepEqual(
+    decodePipeNotification(JSON.stringify({ ...frame, turn: 0, status: "aborted", sessionFile: null })),
+    { ...frame, turn: 0, status: "aborted", sessionFile: null },
+  );
+  const withoutSession = decodePipeNotification(
+    JSON.stringify({ type: "settled", v: 1, turn: 1, status: "failed", at: frame.at }),
+  );
+  assert.equal("sessionFile" in withoutSession, false);
+
+  const withExtra = decodePipeNotification(encodeFrame({ ...frame, text: "must not travel" }).trim());
+  assert.equal("text" in withExtra, false, "a notification never carries result text");
+
+  const reject = (payload: unknown) => {
+    assert.throws(
+      () => decodePipeNotification(JSON.stringify(payload)),
+      (error: unknown) => {
+        assert.ok(error instanceof HcSubagentError);
+        assert.equal(error.code, "protocol");
+        return true;
+      },
+    );
+    assert.equal(isPipeNotification(payload), false);
+  };
+
+  reject({ ...frame, v: undefined });
+  reject({ ...frame, v: 2 });
+  reject({ ...frame, turn: 1.5 });
+  reject({ ...frame, turn: -1 });
+  reject({ ...frame, turn: "3" });
+  reject({ ...frame, status: "done" });
+  reject({ ...frame, at: undefined });
+  reject({ ...frame, at: "yesterday" });
+  reject({ ...frame, sessionFile: "/" + "x".repeat(MAX_PIPE_SESSION_FILE_BYTES) });
+  reject({ ...frame, sessionFile: "/tmp/a\u0000b" });
+  reject({ ...frame, type: "other" });
+  reject(["settled"]);
+  assert.throws(() => decodePipeNotification("{"), /valid JSON/);
+
+  const overLong = JSON.stringify({ ...frame, sessionFile: "/".repeat(MAX_PIPE_FRAME_BYTES + 1) });
+  assert.ok(Buffer.byteLength(overLong, "utf8") > MAX_PIPE_FRAME_BYTES);
+  assert.throws(() => decodePipeNotification(overLong), /exceeds/);
 });
 
 test("server and client round trip ping, prompt, follow_up, interrupt, result, and shutdown", async () => {

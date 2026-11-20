@@ -5,6 +5,11 @@
  * machine-to-machine channel: it never carries ANSI keys, never uses TCP, and
  * never answers a permission dialog. `hc` status and the child session JSONL
  * remain authoritative.
+ *
+ * A `settled` notification never carries result text: it is a hint that the
+ * child's turn ended, not a result channel. Its `at` field is stamped by the
+ * child clock, so a parent may only use it for coarse staleness checks; the
+ * turn number is the authoritative ordering signal.
  */
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -12,9 +17,13 @@ import path from "node:path";
 import { HcSubagentError } from "../core/error.ts";
 
 export const PIPE_VERSION = 1;
+export const NOTIFICATION_VERSION = 1;
 export const MAX_PIPE_FRAME_BYTES = 1024 * 1024;
 export const MAX_PIPE_MESSAGE_BYTES = 256 * 1024;
+export const MAX_PIPE_SESSION_FILE_BYTES = 4 * 1024;
 export const MAX_PIPE_ID_LENGTH = 128;
+const MAX_PIPE_TIMESTAMP_LENGTH = 64;
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
 const PIPE_NAME_RE = /^pi-hc-[a-f0-9]{16}-[A-Za-z0-9._-]{1,64}$/;
 
 export type PipeRequestType = "ping" | "prompt" | "follow_up" | "interrupt" | "shutdown" | "result";
@@ -49,12 +58,21 @@ export interface PipeErrorResponse {
 
 export type PipeResponse = PipeOkResponse | PipeErrorResponse;
 
+export type PipeNotificationStatus = "completed" | "failed" | "aborted";
+
+const NOTIFICATION_STATUSES: ReadonlySet<string> = new Set<PipeNotificationStatus>([
+  "completed",
+  "failed",
+  "aborted",
+]);
+
 export interface PipeSettledNotification {
   type: "settled";
+  v: number;
   turn: number;
-  status: "completed" | "failed" | "aborted";
-  text?: string;
+  status: PipeNotificationStatus;
   sessionFile?: string | null;
+  at: string;
 }
 
 export type PipeNotification = PipeSettledNotification;
@@ -177,6 +195,77 @@ export function errorFrame(
   };
 }
 
+function validTurn(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function validTimestamp(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= MAX_PIPE_TIMESTAMP_LENGTH &&
+    ISO_TIMESTAMP_RE.test(value) &&
+    !Number.isNaN(Date.parse(value))
+  );
+}
+
+function validSessionFile(value: unknown): value is string | null | undefined {
+  if (value === undefined || value === null) return true;
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    !controlCharacters(value) &&
+    Buffer.byteLength(value, "utf8") <= MAX_PIPE_SESSION_FILE_BYTES
+  );
+}
+
+/** Validate a parsed record and rebuild it, so callers never hold the raw value. */
+function validateNotification(raw: unknown): PipeSettledNotification {
+  if (!isRecord(raw)) throw new HcSubagentError("protocol", "pipe notification must be an object");
+  if (raw.type !== "settled") throw new HcSubagentError("protocol", "unknown pipe notification type");
+  if (raw.v !== NOTIFICATION_VERSION) {
+    throw new HcSubagentError("protocol", `unsupported pipe notification version: ${String(raw.v)}`);
+  }
+  if (!validTurn(raw.turn)) {
+    throw new HcSubagentError("protocol", "pipe notification turn is missing or invalid");
+  }
+  if (typeof raw.status !== "string" || !NOTIFICATION_STATUSES.has(raw.status)) {
+    throw new HcSubagentError("protocol", "pipe notification status is missing or invalid");
+  }
+  if (!validTimestamp(raw.at)) {
+    throw new HcSubagentError("protocol", "pipe notification at is missing or not an ISO timestamp");
+  }
+  if (!validSessionFile(raw.sessionFile)) {
+    throw new HcSubagentError("protocol", "pipe notification sessionFile is invalid");
+  }
+  const notification: PipeSettledNotification = {
+    type: "settled",
+    v: NOTIFICATION_VERSION,
+    turn: raw.turn,
+    status: raw.status as PipeNotificationStatus,
+    at: raw.at,
+  };
+  if (raw.sessionFile !== undefined) notification.sessionFile = raw.sessionFile as string | null;
+  return notification;
+}
+
+export function decodePipeNotification(line: string): PipeNotification {
+  if (Buffer.byteLength(line, "utf8") > MAX_PIPE_FRAME_BYTES) {
+    throw new HcSubagentError("protocol", `pipe notification exceeds ${MAX_PIPE_FRAME_BYTES} bytes`);
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(line) as unknown;
+  } catch {
+    throw new HcSubagentError("protocol", "pipe notification is not valid JSON");
+  }
+  return validateNotification(raw);
+}
+
 export function isPipeNotification(value: unknown): value is PipeNotification {
-  return isRecord(value) && value.type === "settled";
+  try {
+    validateNotification(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
