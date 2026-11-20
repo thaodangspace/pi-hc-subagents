@@ -12,6 +12,7 @@ export type FakeChildMode =
   | "success"
   | "error"
   | "blocked"
+  | "blocked-success"
   | "startup-idle"
   | "empty"
   | "length"
@@ -29,6 +30,7 @@ export function fakeChildMode(env: NodeJS.ProcessEnv = process.env): FakeChildMo
   switch (value) {
     case "error":
     case "blocked":
+    case "blocked-success":
     case "startup-idle":
     case "empty":
     case "length":

@@ -12,6 +12,7 @@ type Mode =
   | "success"
   | "error"
   | "blocked"
+  | "blocked-success"
   | "startup-idle"
   | "empty"
   | "length"
@@ -47,6 +48,7 @@ function mode(): Mode {
   switch (value) {
     case "error":
     case "blocked":
+    case "blocked-success":
     case "startup-idle":
     case "empty":
     case "length":
@@ -187,6 +189,22 @@ switch (selectedMode) {
     setTimeout(() => {
       emitStatus("blocked", "Allow the fake permission?", "permission");
     }, 100);
+    finishAndStayAlive();
+    break;
+  case "blocked-success":
+    emitStatus("working", args.name || "fake child");
+    setTimeout(() => emitStatus("blocked", "Allow the fake permission?", "permission"), 100);
+    setTimeout(() => emitStatus("working", args.name || "fake child"), 500);
+    setTimeout(() => {
+      writeSession({
+        sessionDir: args.sessionDir,
+        sessionId: args.sessionId,
+        taskText,
+        stopReason: "stop",
+        text: "Fake child result after unblock.",
+      });
+      emitStatus("done", args.name || "fake child");
+    }, 700);
     finishAndStayAlive();
     break;
   case "error":

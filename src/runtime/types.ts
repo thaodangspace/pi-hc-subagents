@@ -2,7 +2,7 @@
  * Shared data model for parent-side runs.
  */
 import type { TerminalRecord } from "../core/hc-types.ts";
-import type { AgentAccess, AgentSource, ThinkingLevel } from "../agents/agents.ts";
+import type { AgentAccess, AgentSourceKind, ThinkingLevel } from "../agents/agents.ts";
 
 export type { ThinkingLevel };
 
@@ -71,7 +71,7 @@ export interface SubagentRecord {
   childId: string;
   parentSessionId: string;
   agent: string;
-  agentSource: AgentSource;
+  agentSource: AgentSourceKind;
   agentAccess: AgentAccess;
   cwd: string;
   terminal: string;

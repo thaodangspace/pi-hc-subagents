@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { HcSubagentError } from "../core/error.ts";
 import { normalizeNewlines, parseAgentFile } from "./frontmatter.ts";
 
-export type AgentSource = "user" | "project" | "package";
+export type AgentSourceKind = "user" | "project" | "package";
 export type AgentScope = "user" | "project" | "both";
 export type AgentAccess = "read-only" | "write";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -28,7 +28,7 @@ export interface AgentDefinition {
   skills?: string[];
   extensions?: string[];
   cwd?: string;
-  source: AgentSource;
+  source: AgentSourceKind;
   filePath: string;
 }
 
@@ -47,13 +47,20 @@ export interface AgentDiscoveryResult {
   projectAgentsSkipped: boolean;
 }
 
+export interface AgentSource {
+  readonly id: string;
+  readonly precedence: number;
+  discover(cwd: string): Promise<AgentDefinition[]>;
+}
+
 export interface DiscoverAgentsOptions {
   cwd: string;
   scope: AgentScope;
   trusted: boolean;
   agentDir: string;
   packageDir?: string;
-  /** Test hook: extra in-memory sources are merged later (Milestone 2). */
+  /** Intertool agent sources, merged by precedence. */
+  extraSources?: readonly AgentSource[];
   maxDescriptionLength?: number;
 }
 
@@ -113,7 +120,7 @@ export function validateAgentForSpawn(agent: AgentDefinition, options: { trusted
 
 async function readAgentFile(
   filePath: string,
-  source: AgentSource,
+  source: AgentSourceKind,
   warnings: AgentWarning[],
   maxDescriptionLength: number,
 ): Promise<AgentDefinition | null> {
@@ -229,7 +236,7 @@ async function readAgentFile(
 
 async function loadAgentsFromDir(
   dir: string | null,
-  source: AgentSource,
+  source: AgentSourceKind,
   warnings: AgentWarning[],
   maxDescriptionLength: number,
 ): Promise<AgentDefinition[]> {
@@ -293,10 +300,32 @@ export async function discoverAgents(options: DiscoverAgentsOptions): Promise<Ag
     }
   }
 
+  const extraLayers: Array<{ agents: AgentDefinition[]; precedence: number; index: number }> = [];
+  for (const [index, source] of (options.extraSources ?? []).entries()) {
+    let agents: AgentDefinition[] = [];
+    try {
+      agents = await source.discover(options.cwd);
+    } catch (error) {
+      warnings.push({
+        filePath: null,
+        field: `<source:${source.id}>`,
+        message: `agent source failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+    extraLayers.push({ agents, precedence: source.precedence, index });
+  }
+
   const byName = new Map<string, AgentDefinition>();
-  const sources: AgentDefinition[][] = [packageAgents, userAgents, projectAgents];
-  for (const agents of sources) {
-    for (const agent of agents) {
+  const layers: Array<{ agents: AgentDefinition[] }> = [
+    { agents: packageAgents },
+    { agents: userAgents },
+    { agents: projectAgents },
+    ...extraLayers
+      .sort((a, b) => a.precedence - b.precedence || a.index - b.index)
+      .map((layer) => ({ agents: layer.agents })),
+  ];
+  for (const layer of layers) {
+    for (const agent of layer.agents) {
       const previous = byName.get(agent.name);
       if (previous) {
         warnings.push({

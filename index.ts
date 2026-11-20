@@ -5,99 +5,88 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { formatConfigDiagnostics } from "./src/config/config.ts";
+import { runsRootFor } from "./src/child/paths.ts";
 import { Registry } from "./src/runtime/registry.ts";
 import { Scheduler } from "./src/runtime/scheduler.ts";
 import { type ExtensionRuntime, createRuntime } from "./src/runtime/runtime.ts";
-import { setupMessage, setupNotification } from "./src/runtime/setup-mode.ts";
-import { formatDuration } from "./src/runtime/result-format.ts";
+import { setupNotification } from "./src/runtime/setup-mode.ts";
 import { shutdownOwnedChildren } from "./src/runtime/lifecycle.ts";
+import { MonitorManager } from "./src/runtime/async-monitor.ts";
+import { Notifier } from "./src/runtime/notifier.ts";
+import { RunPersistence, mergeSummaries, type PersistenceEntry } from "./src/runtime/persistence.ts";
+import { loadSummariesFromRunDirs, reconcileRuns } from "./src/runtime/reconcile.ts";
+import { cleanupExpiredRuns } from "./src/runtime/retention.ts";
+import {
+  IntertoolServiceV1,
+  READY_EVENT,
+  SHUTDOWN_EVENT,
+  installService,
+  removeService,
+} from "./src/intertool/service.ts";
+import { HcSubagentsWidget } from "./src/ui/widget.ts";
+import { registerHcSubagentsCommand } from "./src/ui/command.ts";
+import { registerHcSubagentsRenderers } from "./src/ui/renderers.ts";
 import { registerControlTool } from "./src/tools/control-tool.ts";
 import { registerSpawnTool } from "./src/tools/spawn-tool.ts";
 import type { ToolSession } from "./src/tools/session.ts";
 
-const COMMAND_NAME = "hc-subagents";
-
-const HELP_TEXT = [
-  "Usage: /hc-subagents [list|config]",
-  "",
-  "list    current children (default)",
-  "config  effective configuration and agent directories",
-  "",
-  "Use hc_subagent_control for attach/result/kill actions.",
-].join("\n");
-
 export default function hcSubagentsExtension(pi: ExtensionAPI): void {
   let runtime: ExtensionRuntime | null = null;
   let toolSession: ToolSession | null = null;
+  let widget: HcSubagentsWidget | null = null;
   let toolsRegistered = false;
   let setupNotified = false;
+  let compacting = false;
 
-  pi.registerCommand(COMMAND_NAME, {
-    description: "Inspect and manage hc subagents",
-    async handler(args, ctx) {
-      const text = args.trim();
-      if (!runtime) {
-        ctx.ui.notify("hc-subagents has not initialized yet. Try again after this turn.", "warning");
-        return;
-      }
-      if (runtime.mode === "child") {
-        ctx.ui.notify("hc-subagents: delegated children cannot spawn subagents.", "info");
-        return;
-      }
-      if (!runtime.available) {
-        ctx.ui.notify(setupMessage(runtime.prerequisites), "warning");
-        return;
-      }
+  registerHcSubagentsRenderers(pi);
 
-      const [action = "list"] = text.length > 0 ? text.split(/\s+/, 1) : ["list"];
-      switch (action) {
-        case "config": {
-          const diagnostics = formatConfigDiagnostics(runtime.loadedConfig, {
-            "agents.user": runtime.agentDirs.user,
-            "agents.project": runtime.agentDirs.project ?? "(none)",
-            "agents.package": runtime.agentDirs.package,
-            "hc.version": runtime.prerequisites.coreVersion ?? "unknown",
-            mode: runtime.mode,
-          });
-          ctx.ui.notify(diagnostics, "info");
-          return;
-        }
-        case "list": {
-          const records = toolSession?.registry.listForParent(runtime.parentSessionId) ?? [];
-          if (records.length === 0) {
-            ctx.ui.notify("No subagents yet.", "info");
-            return;
-          }
-          const lines = records.map((record) => {
-            const duration = formatDuration(Date.now() - Date.parse(record.createdAt));
-            return `${record.slug}  ${record.state}  ${record.terminal}  ${record.agent}  ${duration}`;
-          });
-          ctx.ui.notify(lines.join("\n"), "info");
-          return;
-        }
-        default:
-          ctx.ui.notify(HELP_TEXT, "info");
-          return;
-      }
-    },
+  registerHcSubagentsCommand(pi, {
+    getSession: () => toolSession,
+    getRuntime: () => runtime,
   });
 
-  pi.on("session_start", async (_event, ctx) => {
-    if (toolSession) {
-      await shutdownOwnedChildren(toolSession).catch(() => {});
-      toolSession = null;
+  function refreshWidget(): void {
+    if (!widget || !toolSession) return;
+    widget.refresh(
+      toolSession.registry.listForParent(toolSession.runtime.parentSessionId, { includeFinished: false }),
+    );
+  }
+
+  async function teardownSession(): Promise<void> {
+    const current = toolSession;
+    widget?.dispose();
+    widget = null;
+    toolSession = null;
+    runtime = null;
+    if (!current) return;
+    current.monitors?.stopAll();
+    if (current.service) {
+      if (current.runtime.config.intertool.exposeService) {
+        try {
+          pi.events?.emit?.(SHUTDOWN_EVENT, { version: 1 });
+        } catch {
+          // Bus is best effort.
+        }
+        removeService();
+      }
+      current.service.dispose();
     }
+    current.notifier?.dispose();
+    await shutdownOwnedChildren(current).catch(() => {});
+    for (const record of current.registry.listForParent(current.runtime.parentSessionId)) {
+      current.persistence?.append(record);
+    }
+  }
+
+  pi.on("session_start", async (_event, ctx) => {
+    await teardownSession();
     runtime = await createRuntime({
       cwd: ctx.cwd,
       trusted: ctx.isProjectTrusted(),
       parentSessionId: ctx.sessionManager.getSessionId(),
     });
 
-    if (runtime.mode === "child") {
-      toolSession = null;
-      return;
-    }
+    if (runtime.mode === "child") return;
 
     if (runtime.configWarnings.length > 0 && ctx.hasUI) {
       const summary = runtime.configWarnings
@@ -107,40 +96,125 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
       ctx.ui.notify(`hc-subagents config warnings: ${summary}`, "warning");
     }
 
-    if (!runtime.available && !setupNotified) {
-      setupNotified = true;
-      if (ctx.hasUI) ctx.ui.notify(setupNotification(runtime.prerequisites), "warning");
+    if (!runtime.available) {
+      if (!setupNotified) {
+        setupNotified = true;
+        if (ctx.hasUI) ctx.ui.notify(setupNotification(runtime.prerequisites), "warning");
+      }
+      return;
     }
 
-    if (runtime.mode === "ready") {
-      toolSession = {
-        runtime,
-        registry: new Registry(),
-        scheduler: new Scheduler({
-          maxConcurrency: runtime.config.maxConcurrency,
-          parallelWrites: runtime.config.parallelWrites,
-        }),
-      };
-      if (!toolsRegistered) {
-        registerSpawnTool(pi, () => toolSession, { exposure: runtime.config.exposure });
-        registerControlTool(pi, () => toolSession, { exposure: runtime.config.exposure });
-        toolsRegistered = true;
+    const persistence = new RunPersistence({
+      appendEntry: (customType, data) => pi.appendEntry(customType, data),
+      getEntries: () =>
+        (ctx.sessionManager.getEntries?.() ?? []) as PersistenceEntry[],
+    });
+
+    const session: ToolSession = {
+      runtime,
+      registry: new Registry(),
+      scheduler: new Scheduler({
+        maxConcurrency: runtime.config.maxConcurrency,
+        parallelWrites: runtime.config.parallelWrites,
+      }),
+      persistence,
+      monitors: new MonitorManager(),
+      isIdle: () => (typeof ctx.isIdle === "function" ? ctx.isIdle() : true),
+    };
+
+    const fromEntries = persistence.restore(runtime.parentSessionId);
+    const runsRoot = runsRootFor({ agentDir: runtime.agentDir, env: runtime.env });
+    const fromDisk = await loadSummariesFromRunDirs({
+      runsRoot,
+      parentSessionId: runtime.parentSessionId,
+    }).catch(() => []);
+    await reconcileRuns({
+      registry: session.registry,
+      summaries: mergeSummaries(fromEntries, fromDisk),
+      core: runtime.core,
+    }).catch(() => ({ restored: [], stale: [] }));
+
+    session.notifier = new Notifier({
+      sendMessage: (message, options) => pi.sendMessage(message, options),
+      isIdle: () => (typeof ctx.isIdle === "function" ? ctx.isIdle() : true),
+      isCompacting: () => compacting,
+    });
+
+    if (runtime.config.intertool.exposeService || runtime.config.intertool.emitEvents) {
+      const service = new IntertoolServiceV1({
+        session,
+        exposeService: runtime.config.intertool.exposeService,
+        emitEvents: runtime.config.intertool.emitEvents,
+        includeTaskPreview: runtime.config.intertool.includeTaskPreview,
+        ...(pi.events === undefined
+          ? {}
+          : { emitEvent: (channel: string, payload: unknown) => pi.events.emit(channel, payload) }),
+      });
+      session.service = service;
+      if (runtime.config.intertool.exposeService) {
+        installService(service);
+        try {
+          pi.events?.emit?.(READY_EVENT, {
+            version: 1,
+            service,
+            capabilities: service.capabilities,
+          });
+        } catch {
+          // Consumers can also find the symbol.
+        }
       }
-    } else {
-      toolSession = null;
     }
+
+    if (ctx.hasUI) {
+      widget = new HcSubagentsWidget(ctx.ui, { width: () => process.stdout.columns ?? 100 });
+      widget.start();
+    }
+    session.onRecordChange = () => refreshWidget();
+
+    toolSession = session;
+    if (!toolsRegistered) {
+      registerSpawnTool(pi, () => toolSession, { exposure: runtime.config.exposure });
+      registerControlTool(pi, () => toolSession, { exposure: runtime.config.exposure });
+      toolsRegistered = true;
+    }
+    refreshWidget();
+
+    // Retention is best effort and never blocks tool use.
+    await cleanupExpiredRuns({
+      runsRoot,
+      retentionDays: runtime.config.retentionDays,
+      isTerminalLive: async (terminal) => {
+        const record = await runtime?.core.tryGet(terminal).catch(() => null);
+        return record?.state === "live";
+      },
+    }).catch(() => {});
     // Tools are registered only after prerequisite checks. Never expose a tool
     // when the runtime is not ready.
   });
 
+  pi.on("agent_settled", () => {
+    // A settled agent has no compaction in flight; this also clears a cancelled
+    // compaction that never emitted session_compact_failed.
+    compacting = false;
+    toolSession?.notifier?.flush();
+    refreshWidget();
+  });
+
+  pi.on("session_before_compact", () => {
+    compacting = true;
+  });
+
+  pi.on("session_compact", () => {
+    compacting = false;
+    toolSession?.notifier?.flush();
+  });
+
+  pi.on("session_compact_failed", () => {
+    compacting = false;
+    toolSession?.notifier?.flush();
+  });
+
   pi.on("session_shutdown", async () => {
-    const current = toolSession;
-    toolSession = null;
-    runtime = null;
-    if (current) {
-      // Kill every child this parent started; hc parent relation is the second
-      // line of defense if this handler cannot run.
-      await shutdownOwnedChildren(current).catch(() => {});
-    }
+    await teardownSession();
   });
 }

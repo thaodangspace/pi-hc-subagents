@@ -29,8 +29,9 @@ import {
 } from "../runtime/result-format.ts";
 import { readResultFile } from "../runtime/result-store.ts";
 import { ChildStateMachine } from "../runtime/state-machine.ts";
+import { renderSubagentToolResult } from "../ui/renderers.ts";
 import type { SubagentRecord, SubagentState } from "../runtime/types.ts";
-import { finalizeFromSession } from "./spawn-tool.ts";
+import { finalizeFromSession } from "../runtime/finalize.ts";
 import type { ToolSession } from "./session.ts";
 
 const ControlParams = Type.Object({
@@ -281,7 +282,10 @@ async function waitAction(
 ): Promise<AgentToolResult<SubagentResultDetails>> {
   if (isTerminalRecord(record)) {
     const stored = await storedResult(session, record);
-    if (stored) return stored.result;
+    if (stored) {
+      session.notifier?.markDelivered(record.childId, record.turn, "result");
+      return stored.result;
+    }
     const existing = await session.runtime.core.tryGet(record.terminal);
     if (!existing) {
       return errorResult(
@@ -290,7 +294,9 @@ async function waitAction(
         detailsFor(record, { code: "not_settled" }),
       );
     }
-    return (await collectResult(session, record, existing, true)).result;
+    const collected = await collectResult(session, record, existing, true);
+    session.notifier?.markDelivered(record.childId, record.turn, "result");
+    return collected.result;
   }
 
   let terminal = await session.runtime.core.tryGet(record.terminal);
@@ -322,8 +328,11 @@ async function waitAction(
 
   switch (outcome.kind) {
     case "settled":
-    case "exited":
-      return (await collectResult(session, record, outcome.terminal, true)).result;
+    case "exited": {
+      const collected = await collectResult(session, record, outcome.terminal, true);
+      session.notifier?.markDelivered(record.childId, record.turn, "result");
+      return collected.result;
+    }
     case "blocked": {
       const kind = outcome.transition.type === "blocked" ? outcome.transition.kind : null;
       const message = outcome.transition.type === "blocked" ? outcome.transition.message : null;
@@ -437,7 +446,10 @@ async function resultAction(
   record: SubagentRecord,
 ): Promise<AgentToolResult<SubagentResultDetails>> {
   const stored = await storedResult(session, record);
-  if (stored) return stored.result;
+  if (stored) {
+    session.notifier?.markDelivered(record.childId, record.turn, "result");
+    return stored.result;
+  }
   if (isTerminalRecord(record)) {
     const terminal = await session.runtime.core.tryGet(record.terminal);
     if (!terminal) {
@@ -447,7 +459,9 @@ async function resultAction(
         detailsFor(record, { code: "not_settled" }),
       );
     }
-    return (await collectResult(session, record, terminal, true)).result;
+    const collected = await collectResult(session, record, terminal, true);
+    session.notifier?.markDelivered(record.childId, record.turn, "result");
+    return collected.result;
   }
 
   const terminal = await session.runtime.core.tryGet(record.terminal);
@@ -474,7 +488,9 @@ async function resultAction(
       detailsFor(record, { code: "not_settled" }),
     );
   }
-  return (await collectResult(session, record, terminal, false)).result;
+  const collected = await collectResult(session, record, terminal, false);
+  session.notifier?.markDelivered(record.childId, record.turn, "result");
+  return collected.result;
 }
 
 async function attachAction(
@@ -521,6 +537,7 @@ async function killAction(
   session: ToolSession,
   record: SubagentRecord,
 ): Promise<AgentToolResult<SubagentResultDetails>> {
+  session.monitors?.stop(record.childId);
   let terminalError: string | null = null;
   try {
     await session.runtime.core.kill(record.terminal);
@@ -551,6 +568,10 @@ async function killAction(
       settledAt: now,
     }).catch(() => {});
   }
+  session.notifier?.markDelivered(updated.childId, updated.turn, "result");
+  session.service?.emitCancelled(updated);
+  session.persistence?.append(updated);
+  session.onRecordChange?.(updated);
   return {
     content: [{ type: "text", text: `killed ${updated.slug} (${updated.terminal}). Run files were kept for inspection.` }],
     details: detailsFor(updated, { state: "cancelled", outcome: "aborted" }),
@@ -579,6 +600,9 @@ export function registerControlTool(
       "Never answer a blocked subagent's dialog; use hc_subagent_control attach to tell the user how to attach.",
     ],
     parameters: ControlParams,
+    renderResult(result, { expanded }, theme) {
+      return renderSubagentToolResult(result as never, { expanded }, theme);
+    },
     async execute(_toolCallId, params, signal) {
       const session = getSession();
       if (!session) {

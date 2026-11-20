@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
+import { READY_EVENT, SHUTDOWN_EVENT, serviceFrom } from "../../src/intertool/service.ts";
 import { createRuntime } from "../../src/runtime/runtime.ts";
 import { hcAvailable, startIsolatedHc } from "./harness.ts";
 
@@ -99,6 +100,77 @@ test("inside hc, session_start registers both tools; shutdown clears them", { sk
       ["HC_TERMINAL_SOCKET", saved.socket],
       ["PI_CODING_AGENT_DIR", saved.agentDir],
       ["PI_HC_SUBAGENT", saved.subagent],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(agentDir, { recursive: true, force: true });
+    await isolated.cleanup();
+  }
+});
+
+test("session_start publishes the service and session_shutdown removes it", { skip: !available }, async () => {
+  const isolated = await startIsolatedHc();
+  const agentDir = await mkdtemp(path.join("/tmp", "hcr-"));
+  const saved = {
+    terminalId: process.env.HC_TERMINAL_ID,
+    socket: process.env.HC_TERMINAL_SOCKET,
+    agentDir: process.env.PI_CODING_AGENT_DIR,
+  };
+  try {
+    process.env.HC_TERMINAL_ID = isolated.env.HC_TERMINAL_ID;
+    process.env.HC_TERMINAL_SOCKET = isolated.env.HC_TERMINAL_SOCKET;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const handlers = new Map<string, (...args: any[]) => any>();
+    const events: Array<{ channel: string; payload: any }> = [];
+    const pi = {
+      on(name: string, handler: (...args: any[]) => any) {
+        handlers.set(name, handler);
+        return () => {};
+      },
+      registerTool() {},
+      registerCommand() {},
+      registerMessageRenderer() {},
+      appendEntry() {},
+      sendMessage() {},
+      events: {
+        emit(channel: string, payload: unknown) {
+          events.push({ channel, payload });
+        },
+        on() {
+          return () => {};
+        },
+      },
+    };
+    const extension = (await import("../../index.ts")).default;
+    extension(pi as any);
+
+    const ctx = {
+      cwd: isolated.root,
+      hasUI: false,
+      ui: { notify() {}, confirm: async () => false },
+      isProjectTrusted: () => true,
+      isIdle: () => true,
+      sessionManager: { getSessionId: () => "it-ready-session", getEntries: () => [] },
+    };
+    await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
+    const ready = events.find((entry) => entry.channel === READY_EVENT);
+    assert.ok(ready, "ready event is emitted");
+    assert.equal(ready?.payload.version, 1);
+    assert.equal(ready?.payload.service.version, 1);
+    assert.equal(ready?.payload.capabilities.backend, "hc-local");
+    assert.ok(serviceFrom(), "service symbol is installed");
+    assert.equal(serviceFrom()?.get("missing"), undefined);
+
+    await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+    assert.equal(serviceFrom(), undefined, "service symbol is removed");
+    assert.ok(events.some((entry) => entry.channel === SHUTDOWN_EVENT));
+  } finally {
+    for (const [key, value] of [
+      ["HC_TERMINAL_ID", saved.terminalId],
+      ["HC_TERMINAL_SOCKET", saved.socket],
+      ["PI_CODING_AGENT_DIR", saved.agentDir],
     ] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

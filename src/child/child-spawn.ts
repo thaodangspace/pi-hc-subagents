@@ -33,11 +33,15 @@ export interface RunMetadata {
   sessionId: string;
   terminalName: string;
   origin: string;
+  slug: string;
+  background: boolean;
   labels: Record<string, string>;
   createdAt: string;
   updatedAt: string;
   state: "starting" | "spawned" | "working" | "blocked" | "completed" | "failed" | "cancelled";
   terminal?: string;
+  model?: string;
+  thinking?: string;
   turn?: number;
   coreStatus?: string;
   sessionFile?: string | null;
@@ -49,6 +53,7 @@ export interface RunMetadata {
 export interface SpawnChildOptions {
   signal?: AbortSignal;
   origin?: string;
+  background?: boolean;
   now?: () => Date;
   generateSuffix?: () => string;
 }
@@ -122,6 +127,10 @@ export function createRunMetadata(plan: SpawnPlan, options: SpawnChildOptions = 
     sessionId: plan.paths.childId,
     terminalName: plan.paths.terminalName,
     origin: options.origin ?? "tool",
+    slug: plan.paths.slug,
+    background: options.background === true,
+    ...(plan.agent.model ? { model: plan.agent.model } : {}),
+    ...(plan.agent.thinking ? { thinking: plan.agent.thinking } : {}),
     labels: { ...plan.labels },
     createdAt: timestamp,
     updatedAt: timestamp,
