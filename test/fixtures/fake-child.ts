@@ -19,7 +19,8 @@ type Mode =
   | "aborted"
   | "tooluse"
   | "silent"
-  | "exit-early";
+  | "exit-early"
+  | "task";
 
 function parseArgs(argv: string[]): { sessionId: string; sessionDir: string; name: string; taskFile: string | null } {
   let sessionId = "";
@@ -56,6 +57,7 @@ function mode(): Mode {
     case "tooluse":
     case "silent":
     case "exit-early":
+    case "task":
       return value;
     default:
       return "success";
@@ -171,6 +173,11 @@ if (args.taskFile) {
 
 const taskText = args.taskFile ? readFileSync(args.taskFile, "utf8") : "fake task";
 
+function actualTask(text: string): string {
+  const match = text.match(/# Delegated task\n\n([\s\S]*?)\n\n## Context/);
+  return (match?.[1] ?? text).trim();
+}
+
 function finishAndStayAlive(): void {
   // Keep the terminal live so status/turn remain observable after settling.
   setTimeout(() => {}, 60_000);
@@ -282,6 +289,27 @@ switch (selectedMode) {
     emitStatus("working", args.name || "fake child");
     setTimeout(() => process.exit(3), 150);
     break;
+  case "task": {
+    const task = actualTask(taskText);
+    const fails = /\bFAIL\b/i.test(task);
+    const slow = /\bSLOW\b/i.test(task);
+    emitStatus("working", args.name || "fake child");
+    setTimeout(
+      () => {
+        writeSession({
+          sessionDir: args.sessionDir,
+          sessionId: args.sessionId,
+          taskText: task,
+          stopReason: fails ? "error" : "stop",
+          text: fails ? "" : `Handled task: ${task}`,
+        });
+        setTimeout(() => emitStatus(fails ? "error" : "done", fails ? "fake task failed" : args.name || "fake child"), 100);
+      },
+      slow ? 700 : 100,
+    );
+    finishAndStayAlive();
+    break;
+  }
   case "success":
   default:
     emitStatus("working", args.name || "fake child");
