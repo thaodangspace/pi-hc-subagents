@@ -125,11 +125,13 @@ export async function startBackgroundRun(
       task: request.task,
       cwd,
       paths,
-      parentTerminalId: runtime.parentTerminalId ?? "",
+      parentTerminalId: runtime.parentTerminalId,
       parentSessionId: runtime.parentSessionId,
       trust: { projectTrusted: request.trusted, parentCwd: request.parentCwd },
       excludeTools: runtime.config.excludeTools,
       env: runtime.env,
+      defaultModel: runtime.parentModel,
+      defaultThinking: runtime.parentThinking,
     });
 
     const turnStartedAtMs = Date.now();

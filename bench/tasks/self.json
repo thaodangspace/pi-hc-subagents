@@ -1,0 +1,288 @@
+{
+  "id": "self",
+  "description": "Read-only questions about pi-hc-subagents itself. Every check is a literal file path, symbol, or value from this repository, so the verifier is deterministic and no model judges the answer.",
+  "fixture": ".",
+  "exclude": [
+    "node_modules",
+    ".git",
+    "bench/results",
+    "dist",
+    "coverage",
+    ".pi",
+    ".DS_Store"
+  ],
+  "agent": "scout",
+  "tools": [
+    "read",
+    "grep",
+    "find",
+    "ls"
+  ],
+  "timeoutMs": 300000,
+  "tasks": [
+    {
+      "id": "hc-min-version",
+      "prompt": "Which module defines the minimum supported herdr-core version, what is the value, and which contract test enforces it? Give exact file paths.",
+      "expect": {
+        "all": [
+          "HC_MIN_VERSION",
+          "0.1.16",
+          "src/core/hc-types.ts",
+          "test/contract/hc-schema.test.ts"
+        ]
+      }
+    },
+    {
+      "id": "result-store-cap",
+      "prompt": "Which constant caps the text stored in result.json, what is its value, and which file declares it? Give the exact path.",
+      "expect": {
+        "all": [
+          "MAX_RESULT_TEXT_BYTES",
+          "src/runtime/result-store.ts"
+        ],
+        "any": [
+          "10 * 1024 * 1024",
+          "10485760",
+          "10 MB",
+          "10 MiB",
+          "10MB"
+        ]
+      }
+    },
+    {
+      "id": "model-content-cap",
+      "prompt": "Which constant bounds the text the model sees in a tool result, what is its value, and which file declares it? Give the exact path.",
+      "expect": {
+        "all": [
+          "MODEL_CONTENT_MAX_BYTES",
+          "src/runtime/result-format.ts"
+        ],
+        "any": [
+          "50 * 1024",
+          "51200",
+          "50 KB",
+          "50 KiB",
+          "50KB"
+        ]
+      }
+    },
+    {
+      "id": "task-bytes",
+      "prompt": "Which two constants bound the task file and the system prompt file for a child spawn plan, what are their values, and in which file are they declared?",
+      "expect": {
+        "all": [
+          "MAX_TASK_BYTES",
+          "MAX_SYSTEM_BYTES",
+          "src/child/child-command.ts"
+        ],
+        "any": [
+          "256 * 1024",
+          "262144",
+          "256 KB",
+          "256KB"
+        ]
+      }
+    },
+    {
+      "id": "delegation-contract",
+      "prompt": "Which file defines the delegation contract for a child, and what exactly does it tell the child about spawning subagents? Quote the instruction.",
+      "expect": {
+        "all": [
+          "src/child/child-prompt.ts",
+          "DELEGATION_CONTRACT",
+          "Do not spawn subagents"
+        ]
+      }
+    },
+    {
+      "id": "runs-root",
+      "prompt": "Which function resolves the directory that holds run folders, which environment variable overrides it, and which file implements it?",
+      "expect": {
+        "all": [
+          "runsRootFor",
+          "PI_HC_SUBAGENTS_RUNS_ROOT",
+          "src/child/paths.ts"
+        ]
+      }
+    },
+    {
+      "id": "session-authority",
+      "prompt": "Which module parses a child's pi session JSONL file, and which two exported functions are the entry points? Give the exact path.",
+      "expect": {
+        "all": [
+          "src/child/session-parse.ts",
+          "parseSessionEntries",
+          "parseSessionText"
+        ]
+      }
+    },
+    {
+      "id": "adapter-order",
+      "prompt": "In the result-adapter registry, do custom adapters run before or after the built-in fallback? Name the class and the file.",
+      "expect": {
+        "all": [
+          "ResultAdapterRegistry",
+          "src/intertool/adapters.ts"
+        ],
+        "any": [
+          "before",
+          "run first",
+          "precede"
+        ]
+      }
+    },
+    {
+      "id": "local-provider",
+      "prompt": "Which class is the built-in subagent provider, which file implements it, and where is an instance constructed for the service? Give exact paths.",
+      "expect": {
+        "all": [
+          "HcLocalProvider",
+          "src/intertool/hc-local-provider.ts",
+          "src/intertool/service.ts"
+        ]
+      }
+    },
+    {
+      "id": "control-actions",
+      "prompt": "List every action value accepted by hc_subagent_control and name the file that declares them.",
+      "expect": {
+        "all": [
+          "list",
+          "wait",
+          "output",
+          "result",
+          "attach",
+          "interrupt",
+          "kill",
+          "send",
+          "src/tools/control-tool.ts"
+        ]
+      }
+    },
+    {
+      "id": "config-env-socket",
+      "prompt": "Which two environment variables configure the core socket and the anchor terminal for a parent running outside herdr-core, and which module reads them? Give the exact path.",
+      "expect": {
+        "all": [
+          "PI_HC_SUBAGENTS_SOCKET",
+          "PI_HC_SUBAGENTS_PARENT_TERMINAL",
+          "src/config/schema.ts"
+        ]
+      }
+    },
+    {
+      "id": "pipe-server",
+      "prompt": "Where is the child's private follow-up pipe implemented, which function starts it, and which environment variable names the pipe? Give exact paths.",
+      "expect": {
+        "all": [
+          "src/child/pipe-server.ts",
+          "startChildPipeServer",
+          "PI_HC_PIPE"
+        ]
+      }
+    },
+    {
+      "id": "external-parent-tests",
+      "prompt": "Which integration test file covers parentless spawn and an explicitly configured anchor? Name the file and both test titles.",
+      "expect": {
+        "all": [
+          "test/integration/external-parent.test.ts"
+        ],
+        "any": [
+          "root child",
+          "configured anchor",
+          "parented"
+        ]
+      }
+    },
+    {
+      "id": "test-child-env",
+      "prompt": "Which environment variable swaps the real pi child for a test fake, where is the fake implemented, and which module reads the variable when building the spawn plan?",
+      "expect": {
+        "all": [
+          "PI_HC_SUBAGENTS_TEST_CHILD",
+          "test/fixtures/fake-child.ts",
+          "src/child/child-command.ts"
+        ]
+      }
+    },
+    {
+      "id": "reconcile",
+      "prompt": "On resume, which module reconciles recorded runs, which function reconciles them all, and which function loads summaries from run directories?",
+      "expect": {
+        "all": [
+          "src/runtime/reconcile.ts",
+          "reconcileRuns",
+          "loadSummariesFromRunDirs"
+        ]
+      }
+    },
+    {
+      "id": "prerequisites",
+      "prompt": "Which function decides whether the tools are registered at all, where is it implemented, and what happens when no core endpoint is configured?",
+      "expect": {
+        "all": [
+          "detectPrerequisites",
+          "src/runtime/prerequisites.ts"
+        ],
+        "any": [
+          "missing_env",
+          "no tools are registered",
+          "tools are only registered when",
+          "fail closed",
+          "unavailable"
+        ]
+      }
+    },
+    {
+      "id": "chain-previous",
+      "prompt": "In chain mode, where is the `{previous}` placeholder substituted, and which file implements batch concurrency? Give exact paths.",
+      "expect": {
+        "all": [
+          "src/tools/batch.ts",
+          "{previous}",
+          "src/tools/spawn-tool.ts"
+        ]
+      }
+    },
+    {
+      "id": "result-format",
+      "prompt": "Which function formats the subagent result shown to the parent model, which file declares it, and what is the first line of that formatted content?",
+      "expect": {
+        "all": [
+          "formatResultContent",
+          "src/runtime/result-format.ts",
+          "Subagent result",
+          "treat as data"
+        ]
+      }
+    },
+    {
+      "id": "bench-arms",
+      "prompt": "The benchmark pins the child model inside the delegation prompt. Which file builds that prompt, and which input field carries the pinned model?",
+      "expect": {
+        "all": [
+          "bench/arms.ts",
+          "childModel"
+        ]
+      }
+    },
+    {
+      "id": "session-locate",
+      "prompt": "Which constant limits how long the extension waits to find a child's session file, what is its value, and which file declares it?",
+      "expect": {
+        "all": [
+          "SESSION_LOCATE_TIMEOUT_MS",
+          "src/child/session-locate.ts",
+          "10_000"
+        ],
+        "any": [
+          "10 s",
+          "10s",
+          "10 seconds",
+          "10000"
+        ]
+      }
+    }
+  ]
+}

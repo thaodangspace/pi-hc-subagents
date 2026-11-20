@@ -23,6 +23,22 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:contract
+      - name: Benchmark dry run (no model calls, no hc needed)
+        env:
+          BENCH_LIVE_MODEL: "1"
+          BENCH_MODEL: dry/model
+          BENCH_DRY_RUN: "1"
+          BENCH_OUT: ${{ runner.temp }}/bench-dry
+        run: npm run bench
+      - name: Benchmark routing dry run
+        env:
+          BENCH_LIVE_MODEL: "1"
+          BENCH_MODEL: dry/model
+          BENCH_CHILD_MODEL: dry/cheap
+          BENCH_ARMS: solo,subagent,routing
+          BENCH_DRY_RUN: "1"
+          BENCH_OUT: ${{ runner.temp }}/bench-dry-routing
+        run: npm run bench
 
   integration:
     runs-on: ubuntu-latest

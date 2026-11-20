@@ -11,6 +11,12 @@ export function setupMessage(prerequisites: PrerequisitesResult): string {
   lines.push("Start it with: hc run --bg --name pi pi");
   lines.push("Or open pi inside the Herdr app.");
   lines.push("");
+  lines.push("Outside hc, point at a running core socket instead:");
+  lines.push("  PI_HC_SUBAGENTS_SOCKET=/path/to/core.sock pi");
+  lines.push("(or set hc.socketPath in hc-subagents.json)");
+  lines.push("Children then start as root terminals unless hc.parentTerminal /");
+  lines.push("PI_HC_SUBAGENTS_PARENT_TERMINAL names a live terminal to parent them to.");
+  lines.push("");
   switch (prerequisites.reason) {
     case "missing_env":
       lines.push(`Missing: ${prerequisites.missingEnv.join(", ")}`);

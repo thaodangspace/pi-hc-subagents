@@ -1,0 +1,94 @@
+{
+  "id": "tiny",
+  "description": "Read-only code questions over bench/fixture/tiny. Every check is a literal substring or a matching file path, never a model judgement.",
+  "fixture": "bench/fixture/tiny",
+  "agent": "scout",
+  "tools": ["read", "grep", "find", "ls"],
+  "timeoutMs": 240000,
+  "tasks": [
+    {
+      "id": "defaults-timeout",
+      "prompt": "Find the default request timeout used by this service. Report the constant name, its value, and the exact file path that declares it.",
+      "expect": {
+        "all": ["DEFAULT_TIMEOUT_MS", "src/config.ts"],
+        "any": ["30_000", "30000", "30,000"]
+      }
+    },
+    {
+      "id": "env-vars",
+      "prompt": "List every environment variable that loadConfig reads, the default for each, and the file that defines them.",
+      "expect": {
+        "all": ["PORT", "TIMEOUT_MS", "RETRIES", "src/config.ts"],
+        "any": ["8080"]
+      }
+    },
+    {
+      "id": "duplicate-constant",
+      "prompt": "One backoff constant is duplicated in two modules. Name the constant and give both exact file paths.",
+      "expect": {
+        "all": ["BASE_DELAY_MS", "src/retry.ts", "src/legacy/retry.ts"],
+        "any": ["250"]
+      }
+    },
+    {
+      "id": "retry-callers",
+      "prompt": "Which source files call retry() from src/retry.ts? Exclude the module that defines it. Give exact file paths.",
+      "expect": {
+        "all": ["src/http.ts", "src/jobs.ts"]
+      }
+    },
+    {
+      "id": "error-importers",
+      "prompt": "Which files under src/ import from errors.ts, and which error class does each one use? Give exact file paths and class names.",
+      "expect": {
+        "all": [
+          "src/config.ts",
+          "src/retry.ts",
+          "src/http.ts",
+          "src/legacy/retry.ts",
+          "ConfigurationError",
+          "TimeoutError",
+          "TransportError"
+        ]
+      }
+    },
+    {
+      "id": "exhausted",
+      "prompt": "Describe exactly what retry() does when the final attempt fails. Cite the file, the function, and the constant that sets the default attempt count.",
+      "expect": {
+        "all": ["src/retry.ts", "retry", "MAX_ATTEMPTS"],
+        "any": ["rethrow", "re-throw", "throws the error", "last error", "final error"]
+      }
+    },
+    {
+      "id": "validate-callers",
+      "prompt": "Where is validateConfig called from, and which error type does it throw when the port is invalid? Give exact file paths.",
+      "expect": {
+        "all": ["validateConfig", "ConfigurationError", "src/http.ts", "src/index.ts"]
+      }
+    },
+    {
+      "id": "public-exports",
+      "prompt": "What does src/index.ts export? List the exported function names.",
+      "expect": {
+        "all": ["createApp", "loadConfig", "request", "runJob"]
+      }
+    },
+    {
+      "id": "test-default",
+      "prompt": "Which test asserts the default timeout, in which file, and what is the test name?",
+      "expect": {
+        "all": ["test/config.test.ts"],
+        "any": ["loads defaults when env is empty", "loads defaults"]
+      }
+    },
+    {
+      "id": "http-attempts",
+      "prompt": "How many attempts does request() in src/http.ts make, and where does that number come from? Cite the file and the exact expression.",
+      "expect": {
+        "all": ["src/http.ts", "retry"],
+        "any": ["config.retries", "attempts: config.retries", "retries"]
+      }
+    }
+  ]
+}

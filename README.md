@@ -13,7 +13,8 @@ Phases 1–15 of the implementation plan are implemented: synchronous and backgr
 delegation, parallel `tasks`, sequential `chain`, private-pipe follow-ups with `send`,
 the notifier queue, status widget, project agents with trust/confirmation, the intertool
 service v1, run persistence/recovery/retention, provider and result-adapter extension
-points, and the release hardening checks.
+points, the release hardening checks, and an external-parent mode for pi sessions that
+were not started by `hc`.
 
 Release candidate: `pi-hc-subagents` 0.2.0-rc.1. See [`SPEC.md`](./SPEC.md) for the contract,
 [`PLAN.md`](./PLAN.md) for the research record, and [`AGENTS.md`](./AGENTS.md) for the
@@ -24,7 +25,9 @@ module map and invariants.
 - Node.js >= 22
 - pi >= 1.5.0
 - herdr-core (`hc`) >= 0.1.16, tested against 0.1.21
-- pi must run **inside** an `hc` terminal (`HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` set)
+- a reachable core endpoint: run pi **inside** an `hc` terminal (`HC_TERMINAL_ID` and
+  `HC_TERMINAL_SOCKET` set), or point it at a core socket from outside
+  (`hc.socketPath` / `PI_HC_SUBAGENTS_SOCKET`, absolute)
 
 ## Install (development)
 
@@ -37,8 +40,57 @@ npm test
 Load explicitly while developing:
 
 ```bash
+# parent inside hc
 hc run --bg --name pi pi -e ./index.ts
+
+# parent in your own terminal, children in hc
+PI_HC_SUBAGENTS_SOCKET=$HOME/.local/state/herdr-core/default/default.sock \
+  pi -e ./index.ts
 ```
+
+## Parent outside hc
+
+The extension can manage children from a pi session that was **not** started by `hc`,
+as long as it can reach a live core socket. Inside `hc`, the `HC_TERMINAL_*` variables
+always win; the configured values below only apply outside.
+
+Set either the env vars or the matching config keys (global or trusted project):
+
+```jsonc
+{
+  "hc": {
+    // absolute Unix socket (or Windows named pipe in M4)
+    "socketPath": "/Users/me/.local/state/herdr-core/default/default.sock",
+    // optional: parent children to a live hc terminal
+    "parentTerminal": "t7"
+  }
+}
+```
+
+The default socket lives at `$XDG_STATE_HOME/herdr-core/<HC_SESSION>/<HC_SESSION>.sock`
+(`~/.local/state/herdr-core/default/default.sock` on a default macOS install). `hc ls`
+shows live terminal ids; `hc run --bg --name pi-host -- sh -c 'while :; do sleep 3600; done'`
+creates a dedicated anchor if you want die-with-parent semantics.
+
+| Env | Config | Effect |
+|---|---|---|
+| `PI_HC_SUBAGENTS_SOCKET` | `hc.socketPath` | core endpoint; required outside hc |
+| `PI_HC_SUBAGENTS_PARENT_TERMINAL` | `hc.parentTerminal` | anchor terminal; omit for parentless children |
+
+Semantics:
+
+- **With an anchor** (`parentTerminal`): children get `parent`/`caller` = anchor and are
+  killed when the anchor terminal dies (hc `die_with_parent`). Keep the anchor alive for
+  the whole parent session.
+- **Without an anchor**: children are root terminals (`no_parent: true`); nothing in hc
+  ties them to the parent. The extension still kills them on `session_shutdown`, but a
+  SIGKILLed parent leaves them running — clean up with `hc kill`/`hc rm`.
+- `/hc-subagents config` prints `hc.socket` and `hc.parent`.
+- `PI_HC_SUBAGENTS_SOCKET` is cleared from child environments; children are always
+  launched by the core and get their own real identity.
+
+The socket path is trusted local input (env or config file), never tool/model input, and
+must be absolute. A relative path warns and is ignored.
 
 ## Tools
 
@@ -60,8 +112,9 @@ hc run --bg --name pi pi -e ./index.ts
 `tasks`/`chain` summaries stay compact; full per-task results are in
 `details.results[]`. Every child still gets its own terminal, session, and run record.
 
-Outside an `hc` terminal the tools are not registered; `/hc-subagents` prints setup
-instructions instead.
+Without a reachable core endpoint the tools are not registered; `/hc-subagents` prints
+setup instructions instead. See [Parent outside hc](#parent-outside-hc) for the supported
+external mode.
 
 ## Private follow-up pipe
 
@@ -118,8 +171,8 @@ projects only). Environment overrides use the `PI_HC_SUBAGENTS_*` prefix.
 Run `/hc-subagents config` to print the effective configuration and agent directories.
 
 Relevant M2 keys: `defaultMode`, `notify`, `retentionDays`, `intertool.exposeService`,
-`intertool.emitEvents`, `intertool.includeTaskPreview`, and the existing concurrency,
-polling, and timeout values.
+`intertool.emitEvents`, `intertool.includeTaskPreview`, `hc.socketPath`,
+`hc.parentTerminal`, and the existing concurrency, polling, and timeout values.
 
 ## Agents
 
@@ -131,6 +184,12 @@ live in `~/.pi/agent/agents/*.md`; project agents live in `.pi/agents/*.md` and 
    `allowTrustedProjectAgents: true` from a caller that already has approval).
 
 Without UI, an unapproved project agent is rejected explicitly rather than prompted.
+
+A child inherits the parent's model and thinking level unless the agent's
+frontmatter pins them (`model:`, `thinking:`). Before that, an agent without a
+`model` ran on pi's ambient default, which can be a different provider entirely —
+a child that starts on the wrong model fails on its first turn and looks like a
+delegation bug. The `model`/`thinking` tool parameters still override both.
 
 ## Intertool API v1
 
@@ -253,6 +312,36 @@ accounting against a fake pipe child. Phase 15 adds provider/adapter registratio
 failure containment, result-adapter selection, the `PiSessionResultAdapter`, and security
 checks for redaction, file modes, and force prevention.
 
+## Benchmarks
+
+`bench/` measures delegation against a single-agent baseline on a real `hc` core and
+real pi sessions. It is opt-in, never runs in CI, and is not part of the published
+package.
+
+```bash
+BENCH_LIVE_MODEL=1 BENCH_MODEL=<provider/model> BENCH_DRY_RUN=1 npm run bench
+BENCH_LIVE_MODEL=1 BENCH_MODEL=<provider/model> npm run bench     # 10 tasks x 3 x 3 arms
+npm run bench:report -- bench/results/<run-dir>                   # regenerate, no model calls
+```
+
+Arms: `solo` (one session), `subagent` (parent delegates to a real child),
+`routing` (same delegation with a cheaper child model), and `transcript` (ablation
+where the parent absorbs the child's transcript). Both baseline and child get the
+same system prompt and tool allowlist, and the child model is pinned in the tool
+call, so the delta measures the session boundary and not prompt drift.
+
+Reported per arm: resolve rate with a Wilson CI, `pass^k`, `$ / resolved`,
+billed tokens (`input + cacheRead + cacheWrite`), parent billed tokens, peak context,
+context amplification, and the share of child bytes that reach the parent. Paired
+deltas use a seeded bootstrap and exact McNemar.
+
+Delivery expectations: delegation normally **raises** total billed tokens and
+**lowers** the parent's context. A report that claims otherwise is measuring the
+wrong thing. The first tier-2 run on this repository (`bench/RESULTS.md`, 180 trials,
+`deepseek-flash`) measured exactly that: parent billed tokens −74%, peak context −33%,
+for 1.35× billed tokens and 1.63× $ per resolved trial, at equal accuracy.
+See `bench/README.md` for metrics, caveats, and the Docker path.
+
 ## Safety invariants
 
 - Child output is labelled as untrusted data and is never executed.
@@ -285,6 +374,9 @@ CI runs typecheck, unit tests, and the pinned hc contract test on macOS and Linu
 - No Windows/remote `hc` support (M4). The private pipe is Unix-only until named pipes
   and ConPTY are added, and the built-in provider is local-only. Custom providers can be
   registered through the intertool service, but remote `hc` transport is not shipped.
+- Outside hc, children depend on the configured socket: the parent can outlive the core
+  but not the anchor terminal when `hc.parentTerminal` is set. Parentless children are
+  not tied to the parent by hc; they only get killed on a clean `session_shutdown`.
 - A follow-up needs a child started with the current package's `child.ts`; restored
   pre-M3/older children report `unavailable` instead of falling back to PTY input.
 - `monitorAfterReturn` is accepted in config but not used until a timeout keeps a

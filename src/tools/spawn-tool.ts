@@ -15,6 +15,7 @@ import type { AgentDefinition, AgentScope, ThinkingLevel } from "../agents/agent
 import { discoverAgents, resolveAgent, validateAgentForSpawn } from "../agents/agents.ts";
 import { authorizeProjectAgent } from "../agents/project-policy.ts";
 import { buildSpawnPlan } from "../child/child-command.ts";
+import { modelRef } from "../runtime/runtime.ts";
 import { createSubagentRecord, spawnChild } from "../child/child-spawn.ts";
 import { createRunPaths } from "../child/paths.ts";
 import { locateSessionFile } from "../child/session-locate.ts";
@@ -185,6 +186,13 @@ export function registerSpawnTool(
         );
       }
       const { runtime, scheduler } = session;
+      // Children default to the model and thinking level the parent is using
+      // now. A child on pi's ambient default can be a different provider and
+      // fail on its first turn, which reads as a delegation bug.
+      const parentModel = modelRef(ctx.model) ?? runtime.parentModel;
+      const parentThinking = (ctx.thinkingLevel as typeof runtime.parentThinking) ?? runtime.parentThinking;
+      runtime.parentModel = parentModel;
+      runtime.parentThinking = parentThinking;
       const resolved = resolveSpawnMode(params as Record<string, unknown>);
       if (resolved.error) {
         return errorResult(
@@ -300,11 +308,13 @@ export function registerSpawnTool(
             task: single.task,
             cwd,
             paths,
-            parentTerminalId: runtime.parentTerminalId ?? "",
+            parentTerminalId: runtime.parentTerminalId,
             parentSessionId: runtime.parentSessionId,
             trust: { projectTrusted: ctx.isProjectTrusted(), parentCwd: ctx.cwd },
             excludeTools: runtime.config.excludeTools,
             env: runtime.env,
+            defaultModel: parentModel,
+            defaultThinking: parentThinking,
           });
         } catch (error) {
           const normalized = toHcSubagentError(error);

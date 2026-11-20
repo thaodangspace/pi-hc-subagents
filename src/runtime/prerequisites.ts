@@ -1,9 +1,11 @@
 /**
  * Fail-closed prerequisite detection.
  *
- * All requirements are hard: terminal identity, a reachable core, a supported
- * core version, and a resolvable pi invocation. Tools are only registered when
- * every check passes.
+ * All requirements are hard: a reachable core, a supported core version, and a
+ * resolvable pi invocation. The parent may run inside an `hc` terminal
+ * (`HC_TERMINAL_ID` + `HC_TERMINAL_SOCKET`) or outside one with an explicitly
+ * configured socket (`hc.socketPath` / `PI_HC_SUBAGENTS_SOCKET`). Tools are
+ * only registered when every check passes.
  */
 import type { CoreClient } from "../core/core-client.ts";
 import { describeHcError } from "../core/error.ts";
@@ -23,6 +25,10 @@ export interface PrerequisitesResult {
   reason: PrerequisiteReason;
   message: string;
   coreVersion: string | null;
+  /**
+   * Terminal children are parented to. `null` means the parent runs outside
+   * `hc` without an anchor: children start as root terminals.
+   */
   parentTerminalId: string | null;
   parentSessionId: string | null;
   missingEnv: string[];
@@ -35,6 +41,17 @@ export interface DetectPrerequisitesOptions {
   core: CoreClient;
   piInvocation?: ResolvedPiInvocation;
   parentSessionId?: string | null;
+  /**
+   * Config fallback (`hc.parentTerminal`). `HC_TERMINAL_ID` wins whenever it
+   * is set, so a config file can never re-parent a session started inside hc.
+   */
+  parentTerminal?: string | null;
+}
+
+function nonEmpty(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function detectPrerequisitesSyncEnv(env: NodeJS.ProcessEnv): {
@@ -42,8 +59,8 @@ export function detectPrerequisitesSyncEnv(env: NodeJS.ProcessEnv): {
   socket: string | null;
   missing: string[];
 } {
-  const terminalId = env.HC_TERMINAL_ID && env.HC_TERMINAL_ID.length > 0 ? env.HC_TERMINAL_ID : null;
-  const socket = env.HC_TERMINAL_SOCKET && env.HC_TERMINAL_SOCKET.length > 0 ? env.HC_TERMINAL_SOCKET : null;
+  const terminalId = nonEmpty(env.HC_TERMINAL_ID);
+  const socket = nonEmpty(env.HC_TERMINAL_SOCKET);
   const missing: string[] = [];
   if (!terminalId) missing.push("HC_TERMINAL_ID");
   if (!socket) missing.push("HC_TERMINAL_SOCKET");
@@ -71,15 +88,27 @@ export async function detectPrerequisites(options: DetectPrerequisitesOptions): 
     };
   }
 
-  const { terminalId, missing } = detectPrerequisitesSyncEnv(env);
-  if (missing.length > 0) {
+  // The core client already resolved the endpoint: env first, then config.
+  const socketPath = options.core.socketPath;
+  const envTerminalId = nonEmpty(env.HC_TERMINAL_ID);
+  const configuredTerminalId = nonEmpty(options.parentTerminal);
+  const parentTerminalId = envTerminalId ?? configuredTerminalId;
+
+  if (!socketPath) {
+    const missing: string[] = [];
+    // A configured anchor is useless without a socket, so only report the
+    // pieces that are actually absent.
+    if (!parentTerminalId) missing.push("HC_TERMINAL_ID");
+    missing.push("HC_TERMINAL_SOCKET");
     return {
       ...base,
       available: false,
       reason: "missing_env",
-      message: `not running inside a herdr-core terminal (${missing.join(", ")} not set)`,
+      message: parentTerminalId
+        ? "no herdr-core socket (HC_TERMINAL_SOCKET or PI_HC_SUBAGENTS_SOCKET/hc.socketPath)"
+        : `not running inside a herdr-core terminal (${missing.join(", ")} not set)`,
       coreVersion: null,
-      parentTerminalId: terminalId,
+      parentTerminalId,
       missingEnv: missing,
     };
   }
@@ -94,7 +123,7 @@ export async function detectPrerequisites(options: DetectPrerequisitesOptions): 
       reason: "core_unreachable",
       message: `herdr-core is not reachable: ${describeHcError(error)}`,
       coreVersion: null,
-      parentTerminalId: terminalId,
+      parentTerminalId,
       missingEnv: [],
     };
   }
@@ -106,7 +135,7 @@ export async function detectPrerequisites(options: DetectPrerequisitesOptions): 
       reason: "core_too_old",
       message: `herdr-core ${coreVersion ?? "(unknown)"} is older than the required ${HC_MIN_VERSION}`,
       coreVersion,
-      parentTerminalId: terminalId,
+      parentTerminalId,
       missingEnv: [],
     };
   }
@@ -118,7 +147,7 @@ export async function detectPrerequisites(options: DetectPrerequisitesOptions): 
       reason: "missing_pi",
       message: `cannot resolve the pi executable: ${pi.reason ?? "unknown"}`,
       coreVersion,
-      parentTerminalId: terminalId,
+      parentTerminalId,
       missingEnv: [],
     };
   }
@@ -127,9 +156,11 @@ export async function detectPrerequisites(options: DetectPrerequisitesOptions): 
     ...base,
     available: true,
     reason: "ok",
-    message: `hc ${coreVersion} ready`,
+    message: parentTerminalId
+      ? `hc ${coreVersion} ready`
+      : `hc ${coreVersion} ready (external session; children start without an hc parent)`,
     coreVersion,
-    parentTerminalId: terminalId,
+    parentTerminalId,
     missingEnv: [],
   };
 }

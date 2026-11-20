@@ -42,6 +42,7 @@ export interface RunMetadata {
   updatedAt: string;
   state: "starting" | "spawned" | "working" | "blocked" | "completed" | "failed" | "cancelled";
   terminal?: string;
+  /** Effective model and thinking level the child was started with. */
   model?: string;
   thinking?: string;
   turn?: number;
@@ -70,6 +71,21 @@ export interface SpawnChildResult {
 
 function newSuffix(): string {
   return randomBytes(2).toString("hex");
+}
+
+/**
+ * A missing anchor is an operator error, not a generic spawn failure: the core
+ * reports not_found, which would otherwise look like a bug in the child argv.
+ */
+function describeSpawnError(error: unknown, plan: SpawnPlan): HcSubagentError {
+  const normalized = toHcSubagentError(error, "spawn_failed");
+  if (normalized.code === "not_found" && plan.parent !== null) {
+    return new HcSubagentError("not_found", `parent terminal ${plan.parent} does not exist`, {
+      hint: "hc.parentTerminal / PI_HC_SUBAGENTS_PARENT_TERMINAL must name a live terminal; run hc ls, or unset it for parentless children",
+      cause: normalized,
+    });
+  }
+  return normalized;
 }
 
 function regenerateTerminalName(plan: SpawnPlan, suffix: () => string): string {
@@ -118,7 +134,7 @@ export function createRunMetadata(plan: SpawnPlan, options: SpawnChildOptions = 
     runId: plan.paths.runId,
     childId: plan.paths.childId,
     parentSessionId: plan.env.PI_HC_PARENT_SESSION ?? "",
-    parentTerminalId: plan.parent,
+    parentTerminalId: plan.parent ?? "",
     agent: plan.agent.name,
     agentSource: plan.agent.source,
     agentAccess: plan.agent.access,
@@ -134,8 +150,8 @@ export function createRunMetadata(plan: SpawnPlan, options: SpawnChildOptions = 
     ...(options.provider === undefined ? {} : { provider: options.provider }),
     slug: plan.paths.slug,
     background: options.background === true,
-    ...(plan.agent.model ? { model: plan.agent.model } : {}),
-    ...(plan.agent.thinking ? { thinking: plan.agent.thinking } : {}),
+    ...(plan.model ? { model: plan.model } : {}),
+    ...(plan.thinking ? { thinking: plan.thinking } : {}),
     labels: { ...plan.labels },
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -159,8 +175,9 @@ export async function spawnChild(
         env: candidate.env,
         name: candidate.paths.terminalName,
         labels: candidate.labels,
-        caller: candidate.parent,
-        parent: candidate.parent,
+        caller: candidate.caller,
+        parent: candidate.parent ?? undefined,
+        noParent: candidate.noParent,
         noNotify: true,
         rm: false,
         wait: false,
@@ -200,7 +217,7 @@ export async function spawnChild(
     await writeRunMetadata(candidate.paths, metadata);
     return { terminal, terminalName: metadata.terminalName, retriedName, metadata };
   } catch (error) {
-    const normalized = toHcSubagentError(error, "spawn_failed");
+    const normalized = describeSpawnError(error, plan);
     metadata = {
       ...metadata,
       state: "failed",

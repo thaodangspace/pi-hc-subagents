@@ -621,6 +621,7 @@ export class IntertoolServiceV1 implements HcSubagentsService {
     return {
       parentSessionId: runtime.parentSessionId,
       parentTerminalId: runtime.parentTerminalId ?? "",
+      parentless: runtime.parentTerminalId === null,
       config: runtime.config,
       async resolveAgent(name: string, scope?: AgentScope): Promise<AgentDefinition> {
         const discovery = await discoverAgents({

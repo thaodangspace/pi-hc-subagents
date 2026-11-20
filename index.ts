@@ -8,7 +8,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runsRootFor } from "./src/child/paths.ts";
 import { Registry } from "./src/runtime/registry.ts";
 import { Scheduler } from "./src/runtime/scheduler.ts";
-import { type ExtensionRuntime, createRuntime } from "./src/runtime/runtime.ts";
+import { type ExtensionRuntime, createRuntime, modelRef } from "./src/runtime/runtime.ts";
 import { setupNotification } from "./src/runtime/setup-mode.ts";
 import { shutdownOwnedChildren } from "./src/runtime/lifecycle.ts";
 import { MonitorManager } from "./src/runtime/async-monitor.ts";
@@ -87,6 +87,8 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
       cwd: ctx.cwd,
       trusted: ctx.isProjectTrusted(),
       parentSessionId: ctx.sessionManager.getSessionId(),
+      parentModel: modelRef(ctx.model),
+      parentThinking: ctx.thinkingLevel ?? null,
     });
 
     if (runtime.mode === "child") return;

@@ -455,7 +455,20 @@ export class CoreClient {
   }
 }
 
-/** Create a client from the standard hc environment. */
-export function createCoreClient(env: NodeJS.ProcessEnv = process.env): CoreClient {
-  return new CoreClient({ env });
+/**
+ * Create a client from the standard hc environment, optionally falling back to
+ * a configured socket (used when the parent runs outside an hc terminal).
+ * `HC_TERMINAL_SOCKET` always wins so a config file cannot redirect a session
+ * that is already inside hc.
+ */
+export function createCoreClient(
+  env: NodeJS.ProcessEnv = process.env,
+  fallbackSocketPath?: string | null,
+): CoreClient {
+  const envSocket = env.HC_TERMINAL_SOCKET;
+  const socketPath =
+    typeof envSocket === "string" && envSocket.length > 0
+      ? envSocket
+      : fallbackSocketPath ?? undefined;
+  return new CoreClient({ env, ...(socketPath === undefined ? {} : { socketPath }) });
 }

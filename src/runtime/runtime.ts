@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { ThinkingLevel } from "../agents/agents.ts";
 import { CoreClient, createCoreClient } from "../core/core-client.ts";
 import { type HcSubagentsConfig, type ConfigWarning } from "../config/schema.ts";
 import { type LoadedConfig, loadConfig, resolveAgentDir } from "../config/config.ts";
@@ -37,6 +38,10 @@ export interface ExtensionRuntime {
   trusted: boolean;
   parentSessionId: string;
   parentTerminalId: string | null;
+  /** Parent model (`provider/id`) used as the child default. Refreshable. */
+  parentModel: string | null;
+  /** Parent thinking level used as the child default. Refreshable. */
+  parentThinking: ThinkingLevel | null;
   createdAt: string;
 }
 
@@ -47,6 +52,9 @@ export interface CreateRuntimeOptions {
   env?: NodeJS.ProcessEnv;
   agentDir?: string;
   core?: CoreClient;
+  /** Current parent model and thinking level, used as child defaults. */
+  parentModel?: string | null;
+  parentThinking?: ThinkingLevel | null;
 }
 
 const PACKAGE_AGENTS_DIR = fileURLToPath(new URL("../../agents", import.meta.url));
@@ -71,6 +79,18 @@ function nearestExists(candidate: string): boolean {
   }
 }
 
+/**
+ * Reference pi accepts for `--model`: `provider/id`. Kept structural so the
+ * runtime does not depend on the pi-ai model type.
+ */
+export function modelRef(model: { provider?: unknown; id?: unknown } | null | undefined): string | null {
+  if (!model) return null;
+  const id = typeof model.id === "string" ? model.id.trim() : "";
+  if (id.length === 0) return null;
+  const provider = typeof model.provider === "string" ? model.provider.trim() : "";
+  return provider.length > 0 ? `${provider}/${id}` : id;
+}
+
 export async function createRuntime(options: CreateRuntimeOptions): Promise<ExtensionRuntime> {
   const env = options.env ?? process.env;
   const agentDir = options.agentDir ?? resolveAgentDir(env);
@@ -80,11 +100,12 @@ export async function createRuntime(options: CreateRuntimeOptions): Promise<Exte
     env,
     agentDir,
   });
-  const core = options.core ?? createCoreClient(env);
+  const core = options.core ?? createCoreClient(env, loaded.config.hc.socketPath);
   const prerequisites = await detectPrerequisites({
     env,
     core,
     parentSessionId: options.parentSessionId,
+    parentTerminal: loaded.config.hc.parentTerminal,
   });
   const mode: RuntimeMode =
     prerequisites.reason === "child_mode" ? "child" : prerequisites.available ? "ready" : "setup";
@@ -108,6 +129,8 @@ export async function createRuntime(options: CreateRuntimeOptions): Promise<Exte
     trusted: options.trusted,
     parentSessionId: options.parentSessionId,
     parentTerminalId: prerequisites.parentTerminalId,
+    parentModel: options.parentModel?.trim() || null,
+    parentThinking: options.parentThinking ?? null,
     createdAt: new Date().toISOString(),
   };
 }
@@ -119,6 +142,8 @@ export function runtimeDiagnostics(runtime: ExtensionRuntime): string {
     `agents.project: ${runtime.agentDirs.project ?? "(none)"}`,
     `agents.package: ${runtime.agentDirs.package}`,
     `hc: ${runtime.prerequisites.coreVersion ?? "unknown"}`,
+    `hc.socket: ${runtime.core.socketPath ?? "(none)"}`,
+    `hc.parent: ${runtime.parentTerminalId ?? "(none: parentless children)"}`,
     `mode: ${runtime.mode}`,
   ];
   return dirs.join("\n");

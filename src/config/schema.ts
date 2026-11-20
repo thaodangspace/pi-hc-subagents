@@ -17,6 +17,21 @@ export interface IntertoolConfig {
   includeTaskPreview: boolean;
 }
 
+/**
+ * How the parent reaches herdr-core when it is not running inside an `hc`
+ * terminal. Inside `hc`, the `HC_TERMINAL_*` environment always wins.
+ */
+export interface HcConnectionConfig {
+  /** Core socket; equivalent to `PI_HC_SUBAGENTS_SOCKET`. Must be absolute. */
+  socketPath: string | null;
+  /**
+   * Anchor terminal for children. When null, children start as root terminals
+   * (no hc parent, no die-with-parent). Equivalent to
+   * `PI_HC_SUBAGENTS_PARENT_TERMINAL`.
+   */
+  parentTerminal: string | null;
+}
+
 export interface HcSubagentsConfig {
   maxConcurrency: number;
   maxDepth: number;
@@ -35,6 +50,7 @@ export interface HcSubagentsConfig {
   excludeTools: string[];
   exposure: Exposure;
   intertool: IntertoolConfig;
+  hc: HcConnectionConfig;
 }
 
 export const DEFAULT_CONFIG: Readonly<HcSubagentsConfig> = Object.freeze({
@@ -59,6 +75,10 @@ export const DEFAULT_CONFIG: Readonly<HcSubagentsConfig> = Object.freeze({
     emitEvents: true,
     includeTaskPreview: false,
   },
+  hc: {
+    socketPath: null,
+    parentTerminal: null,
+  },
 });
 
 export type ConfigSource = "global" | "project" | "env" | "defaults";
@@ -70,8 +90,9 @@ export interface ConfigWarning {
   value?: unknown;
 }
 
-export type ConfigLayer = Omit<Partial<HcSubagentsConfig>, "intertool"> & {
+export type ConfigLayer = Omit<Partial<HcSubagentsConfig>, "intertool" | "hc"> & {
   intertool?: Partial<IntertoolConfig>;
+  hc?: Partial<HcConnectionConfig>;
 };
 
 export interface ValidationResult {
@@ -90,6 +111,7 @@ export function cloneDefaultConfig(): HcSubagentsConfig {
     ...DEFAULT_CONFIG,
     excludeTools: [...DEFAULT_CONFIG.excludeTools],
     intertool: { ...DEFAULT_CONFIG.intertool },
+    hc: { ...DEFAULT_CONFIG.hc },
   };
 }
 
@@ -158,6 +180,72 @@ function validateStringArray(
   return [...new Set(items.map((item) => item.trim()))];
 }
 
+function validateOptionalString(
+  raw: Record<string, unknown>,
+  key: string,
+  field: string,
+  source: ConfigSource,
+  warnings: ConfigWarning[],
+  invalid: (value: string) => string | null,
+): string | null | undefined {
+  if (!(key in raw)) return undefined;
+  const value = raw[key];
+  if (value === null) return null;
+  if (typeof value !== "string") {
+    warnings.push({ source, field, message: "expected a string or null", value });
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    warnings.push({ source, field, message: "expected a non-empty string or null", value });
+    return undefined;
+  }
+  const problem = invalid(trimmed);
+  if (problem !== null) {
+    warnings.push({ source, field, message: problem, value });
+    return undefined;
+  }
+  return trimmed;
+}
+
+function validateParentTerminal(value: string): string | null {
+  if (value.length > 64) return "terminal id is longer than 64 characters";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value)) return "expected an hc terminal id";
+  return null;
+}
+
+function validateSocketPath(value: string): string | null {
+  // Windows named pipes (M4) are absolute in their own namespace; on Unix a
+  // relative socket would depend on the launch directory, so reject it.
+  return /^(?:\/|\\\\\.\\pipe\\)/.test(value) ? null : "expected an absolute socket path";
+}
+
+function validateHc(
+  raw: Record<string, unknown>,
+  source: ConfigSource,
+  warnings: ConfigWarning[],
+): Partial<HcConnectionConfig> | undefined {
+  if (!("hc" in raw)) return undefined;
+  const value = raw.hc;
+  if (!isRecord(value)) {
+    warnings.push({ source, field: "hc", message: "expected an object", value });
+    return undefined;
+  }
+  const result: Partial<HcConnectionConfig> = {};
+  const socketPath = validateOptionalString(value, "socketPath", "hc.socketPath", source, warnings, validateSocketPath);
+  if (socketPath !== undefined) result.socketPath = socketPath;
+  const parentTerminal = validateOptionalString(
+    value,
+    "parentTerminal",
+    "hc.parentTerminal",
+    source,
+    warnings,
+    validateParentTerminal,
+  );
+  if (parentTerminal !== undefined) result.parentTerminal = parentTerminal;
+  return result;
+}
+
 function validateIntertool(
   raw: Record<string, unknown>,
   source: ConfigSource,
@@ -224,6 +312,9 @@ export function validateConfig(raw: unknown, source: ConfigSource): ValidationRe
   const intertool = validateIntertool(raw, source, warnings);
   if (intertool !== undefined) value.intertool = intertool;
 
+  const hc = validateHc(raw, source, warnings);
+  if (hc !== undefined) value.hc = hc;
+
   return { value, warnings };
 }
 
@@ -234,6 +325,7 @@ export function applyConfigLayer(base: HcSubagentsConfig, layer: ConfigLayer): H
     ...layer,
     excludeTools: layer.excludeTools ? [...layer.excludeTools] : [...base.excludeTools],
     intertool: layer.intertool ? { ...base.intertool, ...layer.intertool } : { ...base.intertool },
+    hc: layer.hc ? { ...base.hc, ...layer.hc } : { ...base.hc },
   };
 }
 
@@ -279,6 +371,34 @@ export function envOverrides(env: NodeJS.ProcessEnv): ValidationResult {
         field: "PI_HC_SUBAGENTS_AGENT_SCOPE",
         message: `expected one of ${AGENT_SCOPES.join(", ")}`,
         value: scope,
+      });
+    }
+  }
+
+  const socketPath = env.PI_HC_SUBAGENTS_SOCKET?.trim();
+  if (socketPath) {
+    const problem = validateSocketPath(socketPath);
+    if (problem === null) value.hc = { ...value.hc, socketPath };
+    else {
+      warnings.push({
+        source: "env",
+        field: "PI_HC_SUBAGENTS_SOCKET",
+        message: problem,
+        value: socketPath,
+      });
+    }
+  }
+
+  const parentTerminal = env.PI_HC_SUBAGENTS_PARENT_TERMINAL?.trim();
+  if (parentTerminal) {
+    const problem = validateParentTerminal(parentTerminal);
+    if (problem === null) value.hc = { ...value.hc, parentTerminal };
+    else {
+      warnings.push({
+        source: "env",
+        field: "PI_HC_SUBAGENTS_PARENT_TERMINAL",
+        message: problem,
+        value: parentTerminal,
       });
     }
   }

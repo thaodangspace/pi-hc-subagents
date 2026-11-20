@@ -52,6 +52,8 @@ test("child environment keeps provider credentials but strips parent identity ma
         HC_TERMINAL_SOCKET: "/tmp/core.sock",
         PI_SESSION_ID: "stale-session",
         PI_SESSION_FILE: "/tmp/stale.jsonl",
+        PI_HC_SUBAGENTS_SOCKET: "/tmp/parent-core.sock",
+        PI_HC_SUBAGENTS_PARENT_TERMINAL: "t-parent",
       },
       piInvocation: ["/opt/pi/bin/pi"],
     });
@@ -63,6 +65,8 @@ test("child environment keeps provider credentials but strips parent identity ma
     assert.equal(plan.env.HC_TERMINAL_SOCKET, undefined);
     assert.equal(plan.env.PI_SESSION_ID, "");
     assert.equal(plan.env.PI_SESSION_FILE, "");
+    assert.equal(plan.env.PI_HC_SUBAGENTS_SOCKET, "");
+    assert.equal(plan.env.PI_HC_SUBAGENTS_PARENT_TERMINAL, "");
     assert.equal(plan.env.PI_HC_SUBAGENT, "1");
     assert.equal(plan.env.PI_HC_PARENT_SESSION, "parent-session");
   } finally {

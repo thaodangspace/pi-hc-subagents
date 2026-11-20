@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { effectiveAgentTools, validateAgentForSpawn, type AgentDefinition } from "../agents/agents.ts";
+import { effectiveAgentTools, validateAgentForSpawn, type AgentDefinition, type ThinkingLevel } from "../agents/agents.ts";
 import { HcSubagentError } from "../core/error.ts";
 import { buildSystemFile, buildTaskFile } from "./child-prompt.ts";
 import type { RunPaths } from "./paths.ts";
@@ -33,6 +33,8 @@ const CLEARED_CHILD_ENV = [
   "PI_SESSION_ID",
   "PI_SESSION_FILE",
   "PI_HC_PIPE",
+  "PI_HC_SUBAGENTS_SOCKET",
+  "PI_HC_SUBAGENTS_PARENT_TERMINAL",
 ] as const;
 
 export interface SpawnPlanTrust {
@@ -45,24 +47,41 @@ export interface BuildSpawnPlanInput {
   task: string;
   cwd: string;
   paths: RunPaths;
-  parentTerminalId: string;
+  /** Anchor terminal, or null when the parent runs outside hc parentless. */
+  parentTerminalId: string | null;
   parentSessionId: string;
   trust: SpawnPlanTrust;
   excludeTools?: string[];
   env?: NodeJS.ProcessEnv;
   piInvocation?: string[];
+  /**
+   * Parent model used when the agent does not pin one. Keeps a delegated child
+   * on the model the user is actually talking to instead of pi's ambient
+   * default, which can be a different provider entirely.
+   */
+  defaultModel?: string | null;
+  /** Parent thinking level used when the agent does not pin one. */
+  defaultThinking?: ThinkingLevel | null;
 }
 
 export interface SpawnPlan {
   agent: AgentDefinition;
+  /** Effective model: agent override, else the parent default, else null. */
+  model: string | null;
+  /** Effective thinking level: agent override, else the parent default. */
+  thinking: ThinkingLevel | null;
   task: string;
   cwd: string;
   paths: RunPaths;
   argv: string[];
   env: Record<string, string>;
   labels: Record<string, string>;
-  parent: string;
-  caller: string;
+  /** Anchor terminal for `terminal.run`; null starts a root terminal. */
+  parent: string | null;
+  /** hc caller identity; null when the parent has no hc terminal. */
+  caller: string | null;
+  /** True when children must be started without an hc parent. */
+  noParent: boolean;
   trustFlag: boolean;
   taskContent: string;
   systemContent: string;
@@ -144,11 +163,22 @@ function resolveExistingCwd(cwd: string): string {
   }
 }
 
+function resolveModel(value: string | null | undefined): string | null {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (trimmed.length === 0) return null;
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new HcSubagentError("validation", "model id contains control characters");
+  }
+  return trimmed;
+}
+
 export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
   const env = input.env ?? process.env;
   if (!isRecord(input.agent)) throw new HcSubagentError("validation", "agent definition is missing");
   validateAgentForSpawn(input.agent, { trusted: input.trust.projectTrusted });
   const cwd = resolveExistingCwd(input.cwd);
+  const model = resolveModel(input.agent.model ?? input.defaultModel ?? null);
+  const thinking = input.agent.thinking ?? input.defaultThinking ?? null;
 
   if (input.agent.source === "project" && (input.agent.extensions?.length ?? 0) > 0 && !input.trust.projectTrusted) {
     throw new HcSubagentError(
@@ -184,6 +214,7 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
 
   const { invocation } = resolveChildInvocation(env, input.piInvocation);
   const pipeName = pipeNameFor(input.trust.parentCwd, input.paths.childId);
+  const parentTerminalId = input.parentTerminalId?.trim() || null;
 
   const excludeTools = [
     ...new Set([...HC_TOOL_NAMES, ...(input.excludeTools ?? []), ...(input.agent.tools?.filter((tool) =>
@@ -202,8 +233,8 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
     input.paths.sessionDir,
     "--name",
     input.paths.sessionName,
-    ...(input.agent.model ? ["--model", input.agent.model] : []),
-    ...(input.agent.thinking ? ["--thinking", input.agent.thinking] : []),
+    ...(model ? ["--model", model] : []),
+    ...(thinking ? ["--thinking", thinking] : []),
     ...(tools && tools.length > 0 ? ["--tools", tools.join(",")] : []),
     "--exclude-tools",
     excludeTools.join(","),
@@ -227,6 +258,8 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
 
   return {
     agent: input.agent,
+    model,
+    thinking,
     task: input.task,
     cwd,
     paths: input.paths,
@@ -239,8 +272,9 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
       PI_HC_PIPE: pipeName,
     }),
     labels,
-    parent: input.parentTerminalId,
-    caller: input.parentTerminalId,
+    parent: parentTerminalId,
+    caller: parentTerminalId,
+    noParent: parentTerminalId === null,
     trustFlag,
     taskContent,
     systemContent,
@@ -256,6 +290,8 @@ export function summarizeSpawnPlan(plan: SpawnPlan): Record<string, unknown> {
     terminalName: plan.paths.terminalName,
     agent: plan.agent.name,
     agentSource: plan.agent.source,
+    model: plan.model,
+    thinking: plan.thinking,
     cwd: plan.cwd,
     argv: plan.argv,
     labels: plan.labels,

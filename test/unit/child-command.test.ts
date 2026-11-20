@@ -158,6 +158,43 @@ test("read-only agents without tools receive an explicit safe allowlist", async 
   }
 });
 
+test("a parentless plan omits parent and caller and sets no_parent", async () => {
+  const cwd = await scratchCwd();
+  try {
+    const plan = buildSpawnPlan({
+      agent: reviewerAgent(),
+      task: "look",
+      cwd,
+      paths: pathsFor(),
+      parentTerminalId: null,
+      parentSessionId: "p",
+      trust: { projectTrusted: false, parentCwd: cwd },
+      env: { PATH: "/bin" },
+      piInvocation: ["pi"],
+    });
+    assert.equal(plan.parent, null);
+    assert.equal(plan.caller, null);
+    assert.equal(plan.noParent, true);
+    assert.equal(plan.labels["pi-hc-parent"], "p");
+
+    const blank = buildSpawnPlan({
+      agent: reviewerAgent(),
+      task: "look",
+      cwd,
+      paths: pathsFor(),
+      parentTerminalId: "   ",
+      parentSessionId: "p",
+      trust: { projectTrusted: false, parentCwd: cwd },
+      env: { PATH: "/bin" },
+      piInvocation: ["pi"],
+    });
+    assert.equal(blank.parent, null);
+    assert.equal(blank.noParent, true);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("child environment filters hc and stale session metadata but keeps credentials", async () => {
   const cwd = await scratchCwd();
   try {
@@ -184,6 +221,8 @@ test("child environment filters hc and stale session metadata but keeps credenti
         PI_MODEL: "gpt",
         PI_REASONING_LEVEL: "high",
         PI_HC_PIPE: "/tmp/stale.sock",
+        PI_HC_SUBAGENTS_SOCKET: "/tmp/parent-core.sock",
+        PI_HC_SUBAGENTS_PARENT_TERMINAL: "t-parent",
         KEEP: "yes",
       },
       piInvocation: ["pi"],
@@ -203,6 +242,8 @@ test("child environment filters hc and stale session metadata but keeps credenti
       "PI_PROVIDER",
       "PI_MODEL",
       "PI_REASONING_LEVEL",
+      "PI_HC_SUBAGENTS_SOCKET",
+      "PI_HC_SUBAGENTS_PARENT_TERMINAL",
     ]) {
       const value = plan.env[removed];
       assert.ok(value === undefined || value === "", `${removed} should be cleared`);
@@ -363,4 +404,104 @@ test("getPiInvocation prefers the running script and falls back safely", () => {
     getPiInvocation({ argv1: undefined, execPath: "/usr/bin/node", exists: () => false }),
     ["pi"],
   );
+});
+
+test("child inherits the parent model and thinking when the agent does not pin them", async () => {
+  const cwd = await scratchCwd();
+  try {
+    const plan = buildSpawnPlan({
+      agent: reviewerAgent({ model: undefined, thinking: undefined }),
+      task: "Review src/index.ts",
+      cwd,
+      paths: pathsFor(),
+      parentTerminalId: "t3",
+      parentSessionId: "parent-session",
+      trust: { projectTrusted: true, parentCwd: cwd },
+      env: { PATH: "/bin" },
+      piInvocation: ["/opt/pi/bin/pi"],
+      defaultModel: "deepseek/deepseek-flash",
+      defaultThinking: "low",
+    });
+
+    assert.equal(plan.model, "deepseek/deepseek-flash");
+    assert.equal(plan.thinking, "low");
+    assert.equal(plan.argv[plan.argv.indexOf("--model") + 1], "deepseek/deepseek-flash");
+    assert.equal(plan.argv[plan.argv.indexOf("--thinking") + 1], "low");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("agent model and thinking win over the parent defaults", async () => {
+  const cwd = await scratchCwd();
+  try {
+    const plan = buildSpawnPlan({
+      agent: reviewerAgent(),
+      task: "Review src/index.ts",
+      cwd,
+      paths: pathsFor(),
+      parentTerminalId: "t3",
+      parentSessionId: "parent-session",
+      trust: { projectTrusted: true, parentCwd: cwd },
+      env: { PATH: "/bin" },
+      piInvocation: ["/opt/pi/bin/pi"],
+      defaultModel: "deepseek/deepseek-flash",
+      defaultThinking: "max",
+    });
+
+    assert.equal(plan.model, "anthropic/claude-sonnet-4-5");
+    assert.equal(plan.thinking, "medium");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("no model or thinking flag when neither the agent nor the parent sets one", async () => {
+  const cwd = await scratchCwd();
+  try {
+    const plan = buildSpawnPlan({
+      agent: reviewerAgent({ model: undefined, thinking: undefined }),
+      task: "Review src/index.ts",
+      cwd,
+      paths: pathsFor(),
+      parentTerminalId: "t3",
+      parentSessionId: "parent-session",
+      trust: { projectTrusted: true, parentCwd: cwd },
+      env: { PATH: "/bin" },
+      piInvocation: ["/opt/pi/bin/pi"],
+      defaultModel: null,
+      defaultThinking: null,
+    });
+
+    assert.equal(plan.model, null);
+    assert.equal(plan.thinking, null);
+    assert.ok(!plan.argv.includes("--model"));
+    assert.ok(!plan.argv.includes("--thinking"));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a model id with control characters is rejected before any spawn", async () => {
+  const cwd = await scratchCwd();
+  try {
+    assert.throws(
+      () =>
+        buildSpawnPlan({
+          agent: reviewerAgent({ model: undefined, thinking: undefined }),
+          task: "x",
+          cwd,
+          paths: pathsFor(),
+          parentTerminalId: "t3",
+          parentSessionId: "parent-session",
+          trust: { projectTrusted: false, parentCwd: cwd },
+          env: { PATH: "/bin" },
+          piInvocation: ["/opt/pi/bin/pi"],
+          defaultModel: "bad\nmodel",
+        }),
+      (error: unknown) => error instanceof HcSubagentError && error.code === "validation",
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });

@@ -97,6 +97,61 @@ test("a supported core with a resolvable pi is ready", async () => {
   });
 });
 
+test("outside hc, a configured socket is enough and children are parentless", async () => {
+  await withServer("0.1.21", async (core) => {
+    const result = await detectPrerequisites({
+      env: {},
+      core,
+      piInvocation: READY_PI,
+    });
+    assert.equal(result.available, true);
+    assert.equal(result.reason, "ok");
+    assert.equal(result.parentTerminalId, null);
+    assert.match(result.message, /external session/);
+  });
+});
+
+test("HC_TERMINAL_ID wins over a configured anchor terminal", async () => {
+  await withServer("0.1.21", async (core, socketPath) => {
+    const result = await detectPrerequisites({
+      env: baseEnv({ HC_TERMINAL_SOCKET: socketPath }),
+      core,
+      piInvocation: READY_PI,
+      parentTerminal: "t-configured",
+    });
+    assert.equal(result.available, true);
+    assert.equal(result.parentTerminalId, "t3");
+  });
+});
+
+test("outside hc, a configured anchor terminal is used as the parent", async () => {
+  await withServer("0.1.21", async (core) => {
+    const result = await detectPrerequisites({
+      env: {},
+      core,
+      piInvocation: READY_PI,
+      parentTerminal: "t-anchor",
+    });
+    assert.equal(result.available, true);
+    assert.equal(result.parentTerminalId, "t-anchor");
+    assert.doesNotMatch(result.message, /external session/);
+  });
+});
+
+test("an anchor without a socket still selects setup mode", async () => {
+  const result = await detectPrerequisites({
+    env: {},
+    core: new CoreClient({ socketPath: null }),
+    piInvocation: READY_PI,
+    parentTerminal: "t-anchor",
+  });
+  assert.equal(result.available, false);
+  assert.equal(result.reason, "missing_env");
+  assert.deepEqual(result.missingEnv, ["HC_TERMINAL_SOCKET"]);
+  assert.match(result.message, /no herdr-core socket/);
+  assert.equal(result.parentTerminalId, "t-anchor");
+});
+
 test("a missing pi binary is rejected even when the core is ready", async () => {
   await withServer("0.1.21", async (core, socketPath) => {
     const result = await detectPrerequisites({

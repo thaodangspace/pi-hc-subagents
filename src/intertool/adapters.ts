@@ -42,7 +42,9 @@ export interface SpawnRequest {
  */
 export interface ProviderHost {
   readonly parentSessionId: string;
+  /** Empty when the parent runs outside hc without an anchor terminal. */
   readonly parentTerminalId: string;
+  readonly parentless?: boolean;
   readonly config: Readonly<HcSubagentsConfig>;
   resolveAgent(name: string, scope?: AgentScope): Promise<AgentDefinition>;
   resolveCwd(cwd?: string): string;

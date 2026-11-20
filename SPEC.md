@@ -100,7 +100,13 @@ A user running `pi` inside an `hc` terminal can:
   - `ctx.ui.custom({ blocked })` and related lifecycle behavior are stable;
   - the session JSONL format used here is current.
 - `hc` >= 0.1.16. Tested against 0.1.21. The extension MUST check the core version at startup and MUST refuse to register tools if the version is too old or the core is unreachable.
-- The parent MUST run inside an `hc` terminal: both `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` MUST be set and non-empty.
+- The parent MUST have a core endpoint: either run inside an `hc` terminal (`HC_TERMINAL_ID` +
+  `HC_TERMINAL_SOCKET`, both non-empty) or be started outside `hc` with an explicit absolute
+  socket (`hc.socketPath` / `PI_HC_SUBAGENTS_SOCKET`). Without either, the extension MUST
+  not register tools.
+- Inside `hc`, `HC_TERMINAL_*` always wins over configured values. Outside `hc`, an optional
+  anchor terminal (`hc.parentTerminal` / `PI_HC_SUBAGENTS_PARENT_TERMINAL`) may parent the
+  children; without one, children start as root terminals.
 - Milestone 1–3 platforms: macOS and Linux. Windows is Milestone 4; the core client SHOULD be written so a Windows named-pipe transport can be added without changing callers.
 
 ### 4.2 hc API constraints
@@ -174,7 +180,7 @@ A user running `pi` inside an `hc` terminal can:
 
 ### 5.3 Trust boundaries
 
-1. **Parent ↔ hc socket**: local user-only endpoint; the extension trusts the socket from `HC_TERMINAL_SOCKET`. It MUST NOT connect to an arbitrary URL.
+1. **Parent ↔ hc socket**: local user-only endpoint; the extension trusts `HC_TERMINAL_SOCKET` or, outside hc, an explicitly configured absolute `hc.socketPath` / `PI_HC_SUBAGENTS_SOCKET`. It MUST NOT connect to an arbitrary URL, and the path MUST NOT come from model/tool input.
 2. **Parent ↔ child prompt**: task/system content is user/model-authored. It MUST be written to files with mode `0600` and passed via `@file`/`--append-system-prompt`, not interpolated into a shell line.
 3. **Child ↔ parent result**: child output is untrusted data. It MUST be marked as such in tool results and MUST NOT be treated as instructions by the extension.
 4. **Project agent definitions**: repository-controlled. They MUST require project trust and (when UI is available) explicit confirmation before use.
@@ -300,9 +306,14 @@ Rules:
 
 ### 8.1 Endpoint and transport
 
-- Endpoint: `process.env.HC_TERMINAL_SOCKET`.
-- Parent identity: `process.env.HC_TERMINAL_ID`.
-- If either is missing, the extension MUST NOT register tools and MUST expose a setup command/notification instead (see §18.5).
+- Endpoint resolution: `process.env.HC_TERMINAL_SOCKET`, else the configured
+  `hc.socketPath` / `PI_HC_SUBAGENTS_SOCKET` (must be absolute). The environment always
+  wins, so a config file cannot redirect a session that already runs inside `hc`.
+- Parent identity: `process.env.HC_TERMINAL_ID`, else the configured `hc.parentTerminal` /
+  `PI_HC_SUBAGENTS_PARENT_TERMINAL`. If both are absent, children start without an hc
+  parent (root terminals).
+- If no endpoint resolves, the extension MUST NOT register tools and MUST expose a setup
+  command/notification instead (see §18.5).
 - Transport: `net.createConnection(endpoint)` with UTF-8 line-delimited JSON.
 - On Windows (Milestone 4), `endpoint` may be a named-pipe path (`\\.\pipe\...`); `net.createConnection` accepts it. The caller-facing API MUST remain the same.
 - One connection per request for request/response methods. An event subscription uses one long-lived connection.
@@ -840,7 +851,11 @@ await core.run({
 ```
 
 - `no_notify: true` is mandatory: machine messages must not be typed into the parent PTY.
-- `parent`/`caller` are mandatory when the parent is inside hc. This gives child-of-parent cleanup.
+- When the parent has an hc terminal (env or configured anchor), `parent`/`caller` are that
+  terminal. This gives child-of-parent cleanup.
+- When the parent runs outside hc without an anchor, pass `caller: null`, omit `parent`, and
+  set `no_parent: true`; children are root terminals. The extension still kills them on
+  `session_shutdown`; a SIGKILLed parent leaves them for manual/retention cleanup.
 - `rm: false` by default: keep the terminal for inspection. Cleanup policy may remove finished terminals after the result is collected.
 - Do NOT use `outlive_parent` by default.
 - Do NOT set `keep: true` by default. A kept terminal replaces a lost program with a shell, which is not a subagent.
@@ -1429,6 +1444,10 @@ export interface HcSubagentsConfig {
     emitEvents: boolean;
     includeTaskPreview: boolean;
   };
+  hc: {
+    socketPath: string | null;      // external parent only; absolute
+    parentTerminal: string | null;  // anchor terminal; null = parentless children
+  };
 }
 ```
 
@@ -1456,6 +1475,10 @@ Default file contents:
     "exposeService": true,
     "emitEvents": true,
     "includeTaskPreview": false
+  },
+  "hc": {
+    "socketPath": null,
+    "parentTerminal": null
   }
 }
 ```
@@ -1469,6 +1492,8 @@ Env overrides (all optional):
 | `PI_HC_SUBAGENTS_STARTUP_TIMEOUT_MS` | `startupTimeoutMs` |
 | `PI_HC_SUBAGENTS_POLL_MS` | `pollIntervalMs` |
 | `PI_HC_SUBAGENTS_AGENT_SCOPE` | `agentScope` |
+| `PI_HC_SUBAGENTS_SOCKET` | `hc.socketPath` (absolute; external parent) |
+| `PI_HC_SUBAGENTS_PARENT_TERMINAL` | `hc.parentTerminal` (anchor terminal) |
 | `PI_HC_SUBAGENTS_DEBUG` | debug logging (not persisted) |
 | `PI_HC_SUBAGENTS_TEST_CHILD` | test-only child command override |
 
@@ -1493,11 +1518,14 @@ Env overrides (all optional):
 
 At startup:
 
-1. Check `HC_TERMINAL_ID` + `HC_TERMINAL_SOCKET`; if absent → setup mode.
-2. `server.status`; if unreachable → setup mode with error hint.
-3. Compare version to minimum; if older → setup mode with update hint.
-4. Check `pi` invocation resolution; if missing → setup mode.
-5. Only then register tools.
+1. Resolve the endpoint: `HC_TERMINAL_SOCKET`, else `PI_HC_SUBAGENTS_SOCKET` /
+   `hc.socketPath` (absolute). If none → setup mode.
+2. Resolve the parent terminal: `HC_TERMINAL_ID`, else `PI_HC_SUBAGENTS_PARENT_TERMINAL` /
+   `hc.parentTerminal`. If none, the session is external and children will be parentless.
+3. `server.status`; if unreachable → setup mode with error hint.
+4. Compare version to minimum; if older → setup mode with update hint.
+5. Check `pi` invocation resolution; if missing → setup mode.
+6. Only then register tools.
 
 Do not partially register tools if the core is missing; a model calling a broken tool wastes turns.
 
@@ -1636,7 +1664,10 @@ export type SubagentView = Readonly<SubagentRecord>; // snapshots are copied by 
 
 export interface ProviderHost {
   readonly parentSessionId: string;
+  /** Empty when the parent runs outside hc without an anchor terminal. */
   readonly parentTerminalId: string;
+  /** Additive: true when `parentTerminalId` is empty. */
+  readonly parentless?: boolean;
   readonly config: Readonly<HcSubagentsConfig>;
   resolveAgent(name: string, scope?: "user" | "project" | "both"): Promise<AgentDefinition>;
   resolveCwd(cwd?: string): string;
@@ -1932,7 +1963,9 @@ service.subscribe((event) => {
 - **Environment.** Do not forward `HC_*` identity or stale `PI_SESSION_*` metadata. Do not forward variables known to be parent-specific unless required.
 - **Path traversal.** `cwd` must be resolved and verified as an existing directory. Do not allow `..` to escape user intent silently; document that any existing directory is allowed, subject to trust.
 - **Resource limits.** Enforce max concurrency, task/system size, output truncation, and optional timeouts.
-- **Core socket.** Only connect to `HC_TERMINAL_SOCKET`; do not accept a socket path from the model/tool input.
+- **Core socket.** Only connect to `HC_TERMINAL_SOCKET`, or to the explicitly configured
+  `hc.socketPath` / `PI_HC_SUBAGENTS_SOCKET` when running outside hc; never accept a socket
+  path from the model/tool input. Configured paths must be absolute and are validated at load.
 - **Intertool.** Service is in-process only. Do not expose it over a network. Treat provider/adapter registration as trusted code; document the risk.
 
 ---

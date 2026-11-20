@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CoreClient, HC_METHODS } from "../../src/core/core-client.ts";
+import { CoreClient, HC_METHODS, createCoreClient } from "../../src/core/core-client.ts";
 import { HcSubagentError } from "../../src/core/error.ts";
 import {
   compareVersions,
@@ -309,4 +309,16 @@ test("contract list names the methods the client relies on", () => {
     "terminal.run",
     "terminal.send",
   ]);
+});
+
+test("createCoreClient prefers the hc environment over a configured socket", () => {
+  const inside = createCoreClient({ HC_TERMINAL_SOCKET: "/tmp/env.sock" }, "/tmp/config.sock");
+  assert.equal(inside.socketPath, "/tmp/env.sock");
+
+  const outside = createCoreClient({}, "/tmp/config.sock");
+  assert.equal(outside.socketPath, "/tmp/config.sock");
+  assert.equal(outside.caller, null);
+
+  const none = createCoreClient({}, null);
+  assert.equal(none.socketPath, null);
 });

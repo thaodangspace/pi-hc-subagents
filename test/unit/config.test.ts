@@ -34,6 +34,7 @@ test("defaults match the approved configuration", () => {
     emitEvents: true,
     includeTaskPreview: false,
   });
+  assert.deepEqual(DEFAULT_CONFIG.hc, { socketPath: null, parentTerminal: null });
 });
 
 test("precedence is env > project > global > defaults", async () => {
@@ -45,22 +46,25 @@ test("precedence is env > project > global > defaults", async () => {
       maxConcurrency: 2,
       waitTimeoutMs: 120_000,
       defaultMode: "async",
+      hc: { socketPath: "/tmp/global.sock", parentTerminal: "t1" },
     });
     await writeJson(path.join(cwd, ".pi", "hc-subagents.json"), {
       maxConcurrency: 3,
       cleanup: "remove",
+      hc: { parentTerminal: "t2" },
     });
 
     const loaded = await loadConfig({
       cwd,
       trusted: true,
       agentDir,
-      env: { PI_HC_SUBAGENTS_MAX_CONCURRENCY: "5" },
+      env: { PI_HC_SUBAGENTS_MAX_CONCURRENCY: "5", PI_HC_SUBAGENTS_SOCKET: "/tmp/env.sock" },
     });
     assert.equal(loaded.config.maxConcurrency, 5);
     assert.equal(loaded.config.waitTimeoutMs, 120_000);
     assert.equal(loaded.config.defaultMode, "async");
     assert.equal(loaded.config.cleanup, "remove");
+    assert.deepEqual(loaded.config.hc, { socketPath: "/tmp/env.sock", parentTerminal: "t2" });
     assert.equal(loaded.warnings.length, 0);
     assert.equal(loaded.paths.projectIgnored, false);
   } finally {
@@ -153,6 +157,47 @@ test("validateConfig ignores unknown fields and deep-merges intertool", () => {
   const result = validateConfig({ intertool: { emitEvents: false }, nothing: 1 }, "global");
   assert.deepEqual(result.value, { intertool: { emitEvents: false } });
   assert.deepEqual(result.warnings, []);
+});
+
+test("hc connection settings validate paths and terminal ids", () => {
+  const valid = validateConfig(
+    { hc: { socketPath: " /tmp/core.sock ", parentTerminal: "t7" } },
+    "global",
+  );
+  assert.deepEqual(valid.value.hc, { socketPath: "/tmp/core.sock", parentTerminal: "t7" });
+  assert.deepEqual(valid.warnings, []);
+
+  const cleared = validateConfig({ hc: { socketPath: null, parentTerminal: null } }, "global");
+  assert.deepEqual(cleared.value.hc, { socketPath: null, parentTerminal: null });
+
+  const invalid = validateConfig(
+    { hc: { socketPath: "relative.sock", parentTerminal: "not a terminal" } },
+    "global",
+  );
+  assert.deepEqual(invalid.value.hc, {});
+  assert.deepEqual(
+    invalid.warnings.map((warning) => warning.field),
+    ["hc.socketPath", "hc.parentTerminal"],
+  );
+});
+
+test("hc connection env overrides are validated", () => {
+  const valid = envOverrides({
+    PI_HC_SUBAGENTS_SOCKET: "/tmp/core.sock",
+    PI_HC_SUBAGENTS_PARENT_TERMINAL: "t9",
+  });
+  assert.deepEqual(valid.value.hc, { socketPath: "/tmp/core.sock", parentTerminal: "t9" });
+  assert.deepEqual(valid.warnings, []);
+
+  const invalid = envOverrides({
+    PI_HC_SUBAGENTS_SOCKET: "core.sock",
+    PI_HC_SUBAGENTS_PARENT_TERMINAL: "two words",
+  });
+  assert.equal(invalid.value.hc, undefined);
+  assert.deepEqual(
+    invalid.warnings.map((warning) => warning.field),
+    ["PI_HC_SUBAGENTS_SOCKET", "PI_HC_SUBAGENTS_PARENT_TERMINAL"],
+  );
 });
 
 test("config diagnostics include paths, warnings, and flags", async () => {

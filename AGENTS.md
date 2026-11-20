@@ -18,6 +18,7 @@ npm test                 # unit tests (node:test)
 npm run test:contract    # pinned hc schema contract
 npm run test:integration # isolated hc core; skips when hc is unavailable
 npm run test:all
+npm run bench            # opt-in live benchmark, requires BENCH_LIVE_MODEL=1 and BENCH_MODEL
 npm pack --dry-run
 ```
 
@@ -41,6 +42,7 @@ them at the developer's default core.
 | `test/unit` | Pure modules, fakes, security checks. |
 | `test/contract` | Pinned `hc schema` contract and minimum-version guard. |
 | `test/integration` | Isolated real `hc` cores with fake or real children. |
+| `bench/**` | Opt-in delegation benchmark: arms, fixtures, metrics, report, Docker image. |
 
 ## Invariants
 
@@ -54,8 +56,9 @@ them at the developer's default core.
 4. **Trust and concurrency are mandatory.** Providers must use `ProviderHost` for agent
    resolution, project trust/confirmation, cwd validation, and scheduler admission.
    Registration is trusted code, but it cannot bypass these checks.
-5. **Fail closed.** Outside `hc`, with an old core, or without a resolvable pi, no tools
-   are registered. A provider/adapter throw is contained and marks the run failed.
+5. **Fail closed.** With no core endpoint (no `HC_TERMINAL_SOCKET` and no configured
+   `hc.socketPath`), with an old core, or without a resolvable pi, no tools are
+   registered. A provider/adapter throw is contained and marks the run failed.
 6. **Privacy.** Events, `run.json`, and persistence entries carry IDs, state, paths, and
    usage — never task text, result text, environment variables, or provider keys.
 7. **File hygiene.** Atomic writes; run/session directories `0700`; task/system/result/
@@ -70,9 +73,19 @@ them at the developer's default core.
 ## Architecture decisions
 
 - **Direct JSON-RPC** to `HC_TERMINAL_SOCKET` instead of shelling out to `hc`; one
-  request per connection with bounded in-flight requests.
+  request per connection with bounded in-flight requests. When the parent runs outside
+  `hc`, the endpoint comes from `hc.socketPath` / `PI_HC_SUBAGENTS_SOCKET`; inside `hc`
+  the environment always wins.
+- **External parent mode.** Without `HC_TERMINAL_ID`, children are parented to
+  `hc.parentTerminal` / `PI_HC_SUBAGENTS_PARENT_TERMINAL` when set, else started with
+  `no_parent: true` (root terminals). The extension still kills owned children on
+  shutdown; parentless children are not tied to the parent by hc.
 - **Child entry (`child.ts`) only for M3+ pipes.** PTY sends remain a test-only fallback
   and are never a public follow-up path.
+- **Child model default.** A child uses the parent's current model and thinking level
+  (`ctx.model`, `ctx.thinkingLevel`) unless the agent frontmatter or the tool call pins
+  them. Ambient pi defaults are never used for a child, because they can point at a
+  different provider and fail on the first turn.
 - **Provider boundary.** The service selects the first matching `SubagentProvider`
   (`backend` omitted/`hc-local` → `HcLocalProvider`). `startBackgroundRun` has a
   `prepared` path so the local provider validates through `ProviderHost` and then starts
@@ -90,16 +103,21 @@ them at the developer's default core.
 |---|---|
 | New hc method/wire param | `src/core/core-client.ts`, `src/core/hc-types.ts`, `test/fixtures/hc-schema.json`, `test/contract/hc-schema.test.ts` |
 | New config key | `src/config/schema.ts`, `src/config/config.ts`, `test/unit/config.test.ts`, README |
+| External parent connection | `src/config/schema.ts` (`hc`), `src/runtime/prerequisites.ts`, `src/core/core-client.ts`, `src/child/child-command.ts`, `test/integration/external-parent.test.ts` |
 | Child launch contract | `src/child/child-command.ts`, `test/unit/child-command.test.ts` |
 | New result shape/state | `src/runtime/types.ts`, `src/runtime/state-machine.ts`, `src/runtime/finalize.ts`, fixtures/tests |
 | New provider | `src/intertool/adapters.ts` types, a provider implementation, service registration test |
 | New result adapter | `src/intertool/adapters.ts`, adapter implementation, `test/unit/adapters.test.ts` |
 | Intertool API/event | `src/intertool/service.ts`, `src/intertool/events.ts`, SPEC §19, README, tests |
 | Tool schema/UX | `src/tools/**`, `src/ui/**`, tests |
+| Benchmark arm/metric | `bench/arms.ts`, `bench/metrics.ts`, `bench/types.ts`, `test/unit/bench-metrics.test.ts` |
+| Benchmark task suite | `bench/tasks/<id>.json`, `bench/fixture/<id>/` |
 
 ## Testing rules
 
 - New behavior lands with unit or integration coverage.
+- External-parent behavior is covered by `test/integration/external-parent.test.ts`
+  (parentless spawn, configured anchor, tool registration, and a fake-child tool run).
 - Pure modules (`core`, `session-parse`, `state-machine`) are fixture-tested.
 - Integration tests use `startIsolatedHc()` from `test/integration/harness.ts` and clean
   up in `finally`.
@@ -107,3 +125,7 @@ them at the developer's default core.
   or model credentials. Live model tests are opt-in and skipped by default.
 - Never put real credentials or user task/result text into fixtures, labels, logs, or
   snapshots.
+- `bench/**` is opt-in and never runs in CI. It spends real tokens, so it is gated by
+  `BENCH_LIVE_MODEL=1`, bounded by `BENCH_MAX_COST_USD`, and must keep task/result text
+  out of `plan.json`, `trials.jsonl`, `metrics.json`, and the report. Metric math is
+  unit-tested on synthetic records.
