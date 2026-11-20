@@ -6,6 +6,7 @@
  * retried after a task may have been delivered.
  */
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 import type { CoreClient } from "../core/core-client.ts";
 import { HcSubagentError, toHcSubagentError } from "../core/error.ts";
@@ -35,8 +36,13 @@ export interface RunMetadata {
   labels: Record<string, string>;
   createdAt: string;
   updatedAt: string;
-  state: "starting" | "spawned" | "failed";
+  state: "starting" | "spawned" | "working" | "blocked" | "completed" | "failed" | "cancelled";
   terminal?: string;
+  turn?: number;
+  coreStatus?: string;
+  sessionFile?: string | null;
+  settledAt?: string;
+  outcome?: string;
   error?: string;
 }
 
@@ -77,6 +83,23 @@ export function withTerminalName(plan: SpawnPlan, terminalName: string): SpawnPl
 
 export async function writeRunMetadata(paths: RunPaths, metadata: RunMetadata): Promise<void> {
   await writeFileAtomic(paths.runFile, `${JSON.stringify(metadata, null, 2)}\n`);
+}
+
+/** Merge a bounded state summary into the existing run.json. Best effort. */
+export async function updateRunMetadataFile(
+  file: string,
+  patch: Partial<RunMetadata>,
+  now: Date = new Date(),
+): Promise<void> {
+  let existing: RunMetadata;
+  try {
+    existing = JSON.parse(await readFile(file, "utf8")) as RunMetadata;
+  } catch {
+    return;
+  }
+  if (!existing || typeof existing !== "object" || existing.version !== 1) return;
+  const next: RunMetadata = { ...existing, ...patch, updatedAt: now.toISOString() };
+  await writeFileAtomic(file, `${JSON.stringify(next, null, 2)}\n`);
 }
 
 export function createRunMetadata(plan: SpawnPlan, options: SpawnChildOptions = {}): RunMetadata {

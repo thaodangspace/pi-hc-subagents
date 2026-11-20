@@ -14,7 +14,12 @@ import { Type, type Static } from "typebox";
 import type { AgentDefinition, ThinkingLevel } from "../agents/agents.ts";
 import { discoverAgents, resolveAgent, validateAgentForSpawn } from "../agents/agents.ts";
 import { buildSpawnPlan } from "../child/child-command.ts";
-import { createSubagentRecord, spawnChild } from "../child/child-spawn.ts";
+import {
+  createSubagentRecord,
+  spawnChild,
+  updateRunMetadataFile,
+  type RunMetadata,
+} from "../child/child-spawn.ts";
 import { createRunPaths } from "../child/paths.ts";
 import { locateSessionFile } from "../child/session-locate.ts";
 import { parseSessionWithRetry, type ParsedSessionFile } from "../child/session-read.ts";
@@ -97,6 +102,27 @@ function baseDetails(overrides: Partial<SubagentResultDetails> = {}): SubagentRe
 function recordDurationMs(record: SubagentRecord, now = Date.now()): number {
   const started = Date.parse(record.createdAt);
   return Number.isFinite(started) ? Math.max(0, now - started) : 0;
+}
+
+/**
+ * Persist a bounded summary; never task or result text.
+ *
+ * Writes are serialized per run file so a late progress observation cannot
+ * overwrite a terminal summary.
+ */
+const runSummaryQueues = new Map<string, Promise<void>>();
+
+async function persistRunSummary(record: SubagentRecord, patch: Partial<RunMetadata>): Promise<void> {
+  if (!record.runDir) return;
+  const file = path.join(record.runDir, "run.json");
+  const previous = runSummaryQueues.get(file) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(() => updateRunMetadataFile(file, { turn: record.turn, ...patch }))
+    .catch(() => {});
+  runSummaryQueues.set(file, next);
+  await next;
+  if (runSummaryQueues.get(file) === next) runSummaryQueues.delete(file);
 }
 
 function recordDetails(
@@ -208,6 +234,13 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
       error,
     });
     await writeResultFile(options.resultFile, resultJson).catch(() => {});
+    await persistRunSummary(updated, {
+      state: "failed",
+      outcome: options.fallbackOutcome,
+      sessionFile: updated.sessionFile,
+      error,
+      settledAt: now,
+    });
     const details = recordDetails(updated, {
       state: "failed",
       outcome: options.fallbackOutcome,
@@ -278,6 +311,13 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
     error: parsed.error ?? null,
   });
   await writeResultFile(options.resultFile, resultJson).catch(() => {});
+  await persistRunSummary(updated, {
+    state,
+    outcome,
+    sessionFile: parsed.sessionFile,
+    ...(parsed.error ? { error: parsed.error } : {}),
+    settledAt: now,
+  });
 
   const details = recordDetails(updated, {
     state,
@@ -527,7 +567,12 @@ export function registerSpawnTool(
                     ? "starting"
                     : record.state;
             if (state !== record.state) {
-              session.registry.update(record.childId, { state });
+              const next = session.registry.update(record.childId, { state });
+              void persistRunSummary(next, {
+                state: state === "blocked" ? "blocked" : "working",
+                coreStatus: (terminal.status?.state ?? "unknown") as string,
+                ...(next.sessionFile ? { sessionFile: next.sessionFile } : {}),
+              });
             }
             if (!onUpdate) return;
             const updated = session.registry.get(record.childId) ?? record;
@@ -577,6 +622,11 @@ export function registerSpawnTool(
             coreStatus: "blocked",
             lastScreen: screenTail,
             turns: record.turns.map((turn) => ({ ...turn, state: "blocked" as const, blocked: { kind: kind ?? undefined, message: message ?? undefined } })),
+          });
+          await persistRunSummary(updated, {
+            state: "blocked",
+            coreStatus: "blocked",
+            sessionFile: updated.sessionFile,
           });
           const details = recordDetails(updated, {
             state: "blocked",
@@ -652,6 +702,13 @@ export function registerSpawnTool(
             });
             await writeResultFile(paths.resultFile, resultJson).catch(() => {});
           }
+          await persistRunSummary(updated, {
+            state: "cancelled",
+            outcome: "aborted",
+            sessionFile: updated.sessionFile,
+            error: abort.killed ? "cancelled after abort (killed)" : "cancelled after abort",
+            settledAt: nowIso,
+          });
           const details = recordDetails(updated, {
             state: "cancelled",
             outcome: "aborted",
@@ -692,6 +749,12 @@ export function registerSpawnTool(
             state,
             coreStatus: (finalTerminal?.status?.state ?? record.coreStatus) as SubagentRecord["coreStatus"],
             terminalState: finalTerminal?.state ?? record.terminalState,
+          });
+          await persistRunSummary(updated, {
+            state,
+            outcome: "timeout",
+            coreStatus: updated.coreStatus,
+            sessionFile: updated.sessionFile,
           });
           const details = recordDetails(updated, {
             state,

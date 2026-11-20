@@ -11,6 +11,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 
 import { waitForChild } from "../child/wait-child.ts";
+import { updateRunMetadataFile } from "../child/child-spawn.ts";
 import { locateSessionFile } from "../child/session-locate.ts";
 import { parseSessionWithRetry } from "../child/session-read.ts";
 import { describeHcError, toHcSubagentError } from "../core/error.ts";
@@ -542,6 +543,14 @@ async function killAction(
         : turn,
     ),
   });
+  if (updated.runDir) {
+    await updateRunMetadataFile(path.join(updated.runDir, "run.json"), {
+      state: "cancelled",
+      outcome: "aborted",
+      ...(updated.sessionFile ? { sessionFile: updated.sessionFile } : {}),
+      settledAt: now,
+    }).catch(() => {});
+  }
   return {
     content: [{ type: "text", text: `killed ${updated.slug} (${updated.terminal}). Run files were kept for inspection.` }],
     details: detailsFor(updated, { state: "cancelled", outcome: "aborted" }),

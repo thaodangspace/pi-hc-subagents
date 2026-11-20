@@ -118,6 +118,14 @@ test("hc_subagent returns bounded text, usage, details, and publishes result.jso
     assert.equal(published.sessionFile, details.sessionFile);
     assert.equal(published.text, "Fake child result: task complete.");
 
+    const runSummary = JSON.parse(await readFile(path.join(path.dirname(resultFile), "run.json"), "utf8"));
+    assert.equal(runSummary.state, "completed");
+    assert.equal(runSummary.outcome, "stop");
+    assert.equal(runSummary.turn, 1);
+    assert.equal(runSummary.sessionFile, details.sessionFile);
+    assert.equal(typeof runSummary.settledAt, "string");
+    assert.equal(runSummary.text, undefined, "run.json never stores result text");
+
     const record = harness.session.registry.get(details.childId);
     assert.equal(record?.state, "completed");
     assert.equal(record?.turn, 1);
@@ -170,6 +178,8 @@ test("blocked returns a non-error result with attach guidance and no result.json
     assert.equal(record?.state, "blocked");
     const terminal = await harness.isolated.core.get(record?.terminal ?? "");
     assert.equal(terminal.state, "live");
+    const runSummary = JSON.parse(await readFile(path.join(path.dirname(resultFile), "run.json"), "utf8"));
+    assert.equal(runSummary.state, "blocked");
   } finally {
     await harness.cleanup();
   }

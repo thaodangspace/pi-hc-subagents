@@ -4,6 +4,9 @@
  * A parent quit kills every child it started. Transient core disconnects never
  * kill a child. Cleanup after a terminal turn follows `cleanup: keep|remove`.
  */
+import path from "node:path";
+
+import { updateRunMetadataFile } from "../child/child-spawn.ts";
 import { HcSubagentError, toHcSubagentError } from "../core/error.ts";
 import type { ToolSession } from "../tools/session.ts";
 import type { SubagentRecord } from "./types.ts";
@@ -25,16 +28,25 @@ export async function shutdownOwnedChildren(session: ToolSession): Promise<Shutd
         await session.runtime.core.kill(record.terminal);
         killed.push(record.terminal);
         if (record.state !== "completed" && record.state !== "failed") {
-          session.registry.update(record.childId, {
+          const nowIso = new Date().toISOString();
+          const updated = session.registry.update(record.childId, {
             state: "cancelled",
             terminalState: "finished",
-            settledAt: new Date().toISOString(),
+            settledAt: nowIso,
             turns: record.turns.map((turn) =>
               turn.state === "running" || turn.state === "blocked"
-                ? { ...turn, state: "cancelled" as const, outcome: "aborted" as const, settledAt: new Date().toISOString() }
+                ? { ...turn, state: "cancelled" as const, outcome: "aborted" as const, settledAt: nowIso }
                 : turn,
             ),
           });
+          if (updated.runDir) {
+            await updateRunMetadataFile(path.join(updated.runDir, "run.json"), {
+              state: "cancelled",
+              outcome: "aborted",
+              settledAt: nowIso,
+              ...(updated.sessionFile ? { sessionFile: updated.sessionFile } : {}),
+            }).catch(() => {});
+          }
         }
       } catch (error) {
         const normalized = toHcSubagentError(error);
