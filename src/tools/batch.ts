@@ -150,6 +150,7 @@ function singleParams(
       ? {}
       : { confirmProjectAgents: base.confirmProjectAgents }),
     ...(base.timeoutMs === undefined ? {} : { timeoutMs: base.timeoutMs }),
+    ...(base.verbosity === undefined ? {} : { verbosity: base.verbosity }),
     background: false,
   };
 }

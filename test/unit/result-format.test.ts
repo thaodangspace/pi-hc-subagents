@@ -15,6 +15,7 @@ import {
   RESULT_CONTENT_MAX_BYTES,
   RESULT_CONTENT_MAX_LINES,
   type ResultContentInput,
+  type ResultVerbosity,
   condenseByLines,
   extractHandoff,
   formatAsyncResultContent,
@@ -551,7 +552,7 @@ function parsedFixture(text: string): ParsedSessionFile {
   };
 }
 
-async function finalizeText(text: string) {
+async function finalizeText(text: string, verbosity?: ResultVerbosity) {
   const root = await mkdtemp(path.join("/tmp", "hc-result-format-"));
   try {
     const registry = new Registry();
@@ -566,6 +567,7 @@ async function finalizeText(text: string) {
       resultFile: path.join(root, "result.json"),
       fallbackOutcome: "incomplete",
       fallbackError: "unused",
+      ...(verbosity === undefined ? {} : { verbosity }),
     });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -609,4 +611,34 @@ test("details set contentCondensed for an over-budget non-handoff report without
   const capped = await finalizeText(oversized);
   assert.equal(capped.result.details.contentCondensed, true);
   assert.equal(capped.result.details.textTruncated, true, "textTruncated still means the details cap");
+});
+
+test("a sync run delivers <=8 KiB by default and the full ceiling with verbosity full", async () => {
+  const text = bigHandoff(4000);
+  assert.ok(bytes(text) > 300 * 1024);
+
+  const summary = await finalizeText(text);
+  const summaryContent = summary.result.content[0]!.text;
+  assert.ok(bytes(summaryContent) <= RESULT_CONTENT_MAX_BYTES + 512);
+  assert.equal(summary.result.details.handoff, true);
+  assert.equal(summary.result.details.contentCondensed, true);
+  assert.equal(summary.result.details.text, text, "details.text keeps the full child text");
+
+  const full = await finalizeText(text, "full");
+  const fullContent = full.result.content[0]!.text;
+  assert.ok(bytes(fullContent) > RESULT_CONTENT_MAX_BYTES);
+  assert.ok(bytes(fullContent) <= FULL_CONTENT_MAX_BYTES + 512);
+  assert.equal(full.result.details.handoff, true);
+  assert.equal(full.result.details.contentCondensed, true);
+});
+
+test("finalize flags describe the content actually rendered at each verbosity", async () => {
+  const text = bigHandoff();
+  const summary = await finalizeText(text);
+  assert.equal(summary.result.details.contentCondensed, true);
+  assert.doesNotMatch(summary.result.content[0]!.text, /finding 200 /, "the summary drops the handoff middle");
+
+  const full = await finalizeText(text, "full");
+  assert.equal(full.result.details.contentCondensed, false);
+  assert.match(full.result.content[0]!.text, /finding 200 /, "full keeps everything from the handoff");
 });

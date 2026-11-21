@@ -20,6 +20,7 @@ import type { TerminalRecord } from "../core/hc-types.ts";
 import { formatCandidates, resolveChildId } from "../runtime/id-resolve.ts";
 import {
   type ModelFacingResult,
+  type ResultVerbosity,
   type SubagentResultDetails,
   detailsText,
   formatBlockedContent,
@@ -48,6 +49,12 @@ const ControlParams = Type.Object({
     Type.String({ description: "For send; follow-up text delivered over the private pipe to a live child" }),
   ),
   wait: Type.Optional(Type.Boolean({ description: "For send; wait for the new turn. Default true" })),
+  verbosity: Type.Optional(
+    StringEnum(["summary", "full"] as const, {
+      description:
+        "Result detail for wait and result: summary (default, ~8 KiB, handoff section only) or full (up to 50 KiB). Ignored by list, output, attach, interrupt, kill, and send.",
+    }),
+  ),
 });
 
 type ControlParamsType = Static<typeof ControlParams>;
@@ -157,6 +164,7 @@ async function collectResult(
   record: SubagentRecord,
   terminal: TerminalRecord,
   final: boolean,
+  verbosity?: ResultVerbosity,
   waitMs = 2000,
 ): Promise<CollectedResult> {
   const file = await findSessionFile(session, record, waitMs);
@@ -171,6 +179,7 @@ async function collectResult(
       resultFile,
       fallbackOutcome: final ? "incomplete" : "exited",
       fallbackError: "no session file is available for this child",
+      ...(verbosity === undefined ? {} : { verbosity }),
     });
   }
   const parsed = await parseSessionWithRetry(file, {
@@ -186,6 +195,7 @@ async function collectResult(
     resultFile,
     fallbackOutcome: final ? "incomplete" : "exited",
     fallbackError: "could not parse a result for this turn",
+    ...(verbosity === undefined ? {} : { verbosity }),
   });
 }
 
@@ -198,12 +208,16 @@ function isTerminalRecord(record: SubagentRecord): boolean {
   );
 }
 
-async function storedResult(session: ToolSession, record: SubagentRecord): Promise<CollectedResult | null> {
+async function storedResult(
+  session: ToolSession,
+  record: SubagentRecord,
+  verbosity?: ResultVerbosity,
+): Promise<CollectedResult | null> {
   if (!record.resultFile) return null;
   const stored = await readResultFile(record.resultFile);
   if (!stored) return null;
   // Computed once: the same selection feeds the content and the two flags.
-  const facing: ModelFacingResult = modelFacingResult(stored.text);
+  const facing: ModelFacingResult = modelFacingResult(stored.text, { verbosity });
   const details = detailsFor(record, {
     state: stored.state,
     outcome: stored.outcome,
@@ -241,6 +255,7 @@ async function storedResult(session: ToolSession, record: SubagentRecord): Promi
           text: stored.text,
           textTruncated: stored.textTruncated,
           error: stored.error ?? undefined,
+          ...(verbosity === undefined ? {} : { verbosity }),
           facing,
         });
   return {
@@ -294,8 +309,9 @@ async function waitAction(
   params: ControlParamsType,
   signal: AbortSignal | undefined,
 ): Promise<AgentToolResult<SubagentResultDetails>> {
+  const verbosity = params.verbosity as ResultVerbosity | undefined;
   if (isTerminalRecord(record)) {
-    const stored = await storedResult(session, record);
+    const stored = await storedResult(session, record, verbosity);
     if (stored) {
       session.notifier?.markResultDelivered(stored.record);
       return stored.result;
@@ -308,7 +324,7 @@ async function waitAction(
         detailsFor(record, { code: "not_settled" }),
       );
     }
-    const collected = await collectResult(session, record, existing, true);
+    const collected = await collectResult(session, record, existing, true, verbosity);
     session.notifier?.markResultDelivered(collected.record);
     return collected.result;
   }
@@ -348,7 +364,7 @@ async function waitAction(
   switch (outcome.kind) {
     case "settled":
     case "exited": {
-      const collected = await collectResult(session, record, outcome.terminal, true);
+      const collected = await collectResult(session, record, outcome.terminal, true, verbosity);
       session.notifier?.markResultDelivered(collected.record);
       return collected.result;
     }
@@ -428,7 +444,7 @@ async function waitAction(
         isError: false,
       };
     case "terminal_lost":
-      return (await collectResult(session, record, terminal, true, 0)).result;
+      return (await collectResult(session, record, terminal, true, verbosity, 0)).result;
   }
 }
 
@@ -463,8 +479,10 @@ async function outputAction(
 async function resultAction(
   session: ToolSession,
   record: SubagentRecord,
+  params: ControlParamsType,
 ): Promise<AgentToolResult<SubagentResultDetails>> {
-  const stored = await storedResult(session, record);
+  const verbosity = params.verbosity as ResultVerbosity | undefined;
+  const stored = await storedResult(session, record, verbosity);
   if (stored) {
     session.notifier?.markResultDelivered(stored.record);
     return stored.result;
@@ -478,7 +496,7 @@ async function resultAction(
         detailsFor(record, { code: "not_settled" }),
       );
     }
-    const collected = await collectResult(session, record, terminal, true);
+    const collected = await collectResult(session, record, terminal, true, verbosity);
     session.notifier?.markResultDelivered(collected.record);
     return collected.result;
   }
@@ -507,7 +525,7 @@ async function resultAction(
       detailsFor(record, { code: "not_settled" }),
     );
   }
-  const collected = await collectResult(session, record, terminal, false);
+  const collected = await collectResult(session, record, terminal, false, verbosity);
   session.notifier?.markResultDelivered(collected.record);
   return collected.result;
 }
@@ -758,7 +776,7 @@ export function registerControlTool(
         case "output":
           return outputAction(session, record, params);
         case "result":
-          return resultAction(session, record);
+          return resultAction(session, record, params);
         case "attach":
           return attachAction(session, record);
         case "interrupt":

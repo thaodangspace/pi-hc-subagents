@@ -6,8 +6,11 @@ import {
   MAX_BATCH_TASKS,
   formatBatchContent,
   resolveSpawnMode,
+  runBatch,
   substitutePrevious,
+  type BatchResultDetails,
   type BatchTaskResult,
+  type TaskSpecType,
 } from "../../src/tools/batch.ts";
 import { PREVIOUS_TASK_MAX_BYTES } from "../../src/runtime/result-format.ts";
 
@@ -98,4 +101,51 @@ test("skipped chain steps are reported as skipped", () => {
   ]);
   assert.match(content, /1 skipped/);
   assert.match(content, /not run because an earlier step did not complete/);
+});
+
+test("verbosity is forwarded to every batch task and the summary stays bounded", async () => {
+  const text = "z".repeat(40 * 1024);
+  const seen: Array<Record<string, unknown>> = [];
+  const tasks: TaskSpecType[] = Array.from({ length: MAX_BATCH_TASKS }, (_, index) => ({
+    agent: `agent-${index}`,
+    task: "look",
+    thinking: undefined,
+  }));
+  const result = await runBatch({
+    mode: "parallel",
+    tasks,
+    base: { verbosity: "full" },
+    async runOne(params) {
+      seen.push(params);
+      return {
+        content: [{ type: "text", text: "compact" }],
+        details: {
+          childId: "c1",
+          runId: "r1",
+          agent: String(params.agent),
+          cwd: "/repo",
+          terminal: "t1",
+          terminalName: "hc-scout",
+          state: "completed" as const,
+          outcome: "stop" as const,
+          sessionFile: null,
+          resultFile: null,
+          turn: 1,
+          durationMs: 10,
+          text,
+        },
+      };
+    },
+  });
+
+  assert.equal(seen.length, MAX_BATCH_TASKS);
+  for (const params of seen) assert.equal(params.verbosity, "full");
+
+  const [first] = result.content;
+  assert.ok(first !== undefined && first.type === "text", "the batch result has text content");
+  const content = first.text;
+  assert.ok(Buffer.byteLength(content, "utf8") <= 16 * 1024, "the batch summary keeps its own budget");
+  const results = (result.details as BatchResultDetails).results;
+  assert.equal(results.length, MAX_BATCH_TASKS);
+  for (const entry of results) assert.equal(entry.text, text, "details.results[].text stays complete");
 });

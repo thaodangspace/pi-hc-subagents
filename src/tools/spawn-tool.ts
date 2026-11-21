@@ -27,6 +27,7 @@ import type { TerminalRecord } from "../core/hc-types.ts";
 import type { SubagentRecord } from "../runtime/types.ts";
 import { updateCurrentTurns } from "../runtime/types.ts";
 import {
+  type ResultVerbosity,
   type SubagentResultDetails,
   formatBlockedContent,
   formatFailureContent,
@@ -59,6 +60,12 @@ const SpawnParams = Type.Object({
   ),
   timeoutMs: Type.Optional(
     Type.Number({ description: "Sync wait timeout; default 600000, max 1800000" }),
+  ),
+  verbosity: Type.Optional(
+    StringEnum(["summary", "full"] as const, {
+      description:
+        "Result detail delivered to this model: summary (default, ~8 KiB, handoff section only) or full (up to 50 KiB)",
+    }),
   ),
   background: Type.Optional(
     Type.Boolean({ description: "Return immediately; deliver the result later. Default: config defaultMode === 'async'." }),
@@ -130,6 +137,12 @@ function validateTimeout(value: number | undefined): string | null {
   if (!Number.isFinite(value) || value < MIN_TIMEOUT_MS || value > MAX_TIMEOUT_MS) {
     return `timeoutMs must be between ${MIN_TIMEOUT_MS} and ${MAX_TIMEOUT_MS}`;
   }
+  return null;
+}
+
+function validateVerbosity(value: ResultVerbosity | undefined): string | null {
+  if (value === undefined) return null;
+  if (value !== "summary" && value !== "full") return 'verbosity must be "summary" or "full"';
   return null;
 }
 
@@ -209,6 +222,15 @@ export function registerSpawnTool(
       if (timeoutIssue) {
         return errorResult(
           timeoutIssue,
+          baseDetails({ agent: requestedAgent, cwd: ctx.cwd, durationMs: 0 }),
+          "validation",
+        );
+      }
+      const verbosity = params.verbosity as ResultVerbosity | undefined;
+      const verbosityIssue = validateVerbosity(verbosity);
+      if (verbosityIssue) {
+        return errorResult(
+          verbosityIssue,
           baseDetails({ agent: requestedAgent, cwd: ctx.cwd, durationMs: 0 }),
           "validation",
         );
@@ -777,6 +799,7 @@ export function registerSpawnTool(
             resultFile: paths.resultFile,
             fallbackOutcome: "exited",
             fallbackError: "terminal was removed or could not be found",
+            ...(verbosity === undefined ? {} : { verbosity }),
           });
           session.notifier?.markResultDelivered(finalized.record);
           session.service?.emitSettled(finalized);
@@ -818,6 +841,7 @@ export function registerSpawnTool(
                 ? `terminal exited before producing a result (exit ${finalTerminal.exitCode})`
                 : "terminal exited before producing a result",
             ...(parseError === undefined ? {} : { parseError }),
+            ...(verbosity === undefined ? {} : { verbosity }),
           });
           session.notifier?.markResultDelivered(finalized.record);
           session.service?.emitSettled(finalized);
@@ -835,6 +859,7 @@ export function registerSpawnTool(
           fallbackOutcome: "incomplete",
           fallbackError: parseError ?? "no session result",
           ...(parseError === undefined ? {} : { parseError }),
+          ...(verbosity === undefined ? {} : { verbosity }),
         });
         session.notifier?.markResultDelivered(finalized.record);
         session.service?.emitSettled(finalized);

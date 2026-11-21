@@ -13,6 +13,7 @@ import { updateRunMetadataFile } from "../child/child-spawn.ts";
 import type { ParsedSessionFile } from "../child/session-read.ts";
 import {
   type ModelFacingResult,
+  type ResultVerbosity,
   type SubagentResultDetails,
   detailsText,
   formatFailureContent,
@@ -102,6 +103,11 @@ export interface FinalizeOptions {
    * fallback/exited paths leave it undefined.
    */
   observedBy?: "push" | "poll";
+  /**
+   * Model-facing detail for this caller: `summary` (default) or `full`.
+   * Background notifications never set it; their envelope has its own budget.
+   */
+  verbosity?: ResultVerbosity;
 }
 
 export interface FinalizeResult {
@@ -201,7 +207,8 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
   const state = parsed.state === "completed" ? "completed" : parsed.state === "cancelled" ? "cancelled" : "failed";
   const textInfo = parsed.text.length > 0 ? detailsText(parsed.text) : { textTruncated: false };
   // Computed once: the same selection feeds the content and the two flags.
-  const facing: ModelFacingResult = modelFacingResult(parsed.text);
+  const verbosity = options.verbosity ?? "summary";
+  const facing: ModelFacingResult = modelFacingResult(parsed.text, { verbosity });
   const updated = session.registry.update(record.childId, {
     state,
     terminalState: terminal.state,
@@ -287,6 +294,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
           text: parsed.text,
           textTruncated: textInfo.textTruncated,
           error: parsed.error,
+          verbosity,
           facing,
         });
 
