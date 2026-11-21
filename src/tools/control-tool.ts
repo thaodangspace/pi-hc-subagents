@@ -42,7 +42,9 @@ const ControlParams = Type.Object({
   timeoutMs: Type.Optional(Type.Number()),
   lines: Type.Optional(Type.Number({ description: "For output; default 60" })),
   includeFinished: Type.Optional(Type.Boolean({ description: "For list; default true" })),
-  message: Type.Optional(Type.String({ description: "For send; follow-up text delivered over the private pipe" })),
+  message: Type.Optional(
+    Type.String({ description: "For send; follow-up text delivered over the private pipe to a live child" }),
+  ),
   wait: Type.Optional(Type.Boolean({ description: "For send; wait for the new turn. Default true" })),
 });
 
@@ -699,14 +701,15 @@ export function registerControlTool(
     ...(options.exposure === "model-only" ? { exposure: "model-only" as const } : {}),
     label: "HC Subagent Control",
     description:
-      "Inspect and manage hc subagents owned by this session: list, wait, output, result, attach, interrupt, kill, send.",
+      "Inspect and manage hc subagents owned by this session: list, wait, output, result, attach, interrupt, kill, send. send only works while the child is live; a child cannot be resumed after /reload or a parent restart.",
     promptSnippet:
       "Inspect or manage hc subagents (list, wait, output, result, attach, interrupt, kill, send).",
     promptGuidelines: [
       "Use hc_subagent_control wait or result instead of sleeping or polling for a subagent.",
       "Use hc_subagent_control output only for debugging; screen output is lossy and never the authoritative result.",
       "Never answer a blocked subagent's dialog; use hc_subagent_control attach to tell the user how to attach.",
-      "Use hc_subagent_control send for a follow-up; it appends a new turn and never types into the terminal.",
+      "Use hc_subagent_control send for a follow-up only while the child is live; it appends a new turn and never types into the terminal.",
+      "After /reload or a parent restart a child cannot be resumed or reattached; start a new child instead of trying send.",
     ],
     parameters: ControlParams,
     renderResult(result, { expanded }, theme) {

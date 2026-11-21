@@ -66,11 +66,15 @@ export async function sendFollowUp(
 
   const terminal = await session.runtime.core.tryGet(record.terminal);
   if (!terminal) {
-    throw new HcSubagentError("not_found", `terminal ${record.terminal} no longer exists`);
+    throw new HcSubagentError("not_found", `terminal ${record.terminal} no longer exists`, {
+      hint: "a child cannot be resumed or reattached after /reload or a parent restart; start a new child",
+    });
   }
   record = session.registry.applyTerminal(record.childId, terminal);
   if (terminal.state === "finished") {
-    throw new HcSubagentError("finished", `child ${record.childId} has already finished`);
+    throw new HcSubagentError("finished", `child ${record.childId} has already finished`, {
+      hint: "a finished child cannot be resumed; start a new child",
+    });
   }
   if (terminal.status?.state === "blocked") {
     const blocked = session.registry.update(record.childId, { state: "blocked", coreStatus: "blocked" });
@@ -84,7 +88,7 @@ export async function sendFollowUp(
   }
   if (!record.pipeName) {
     throw new HcSubagentError("unavailable", "this child has no private follow-up pipe", {
-      hint: "the child was spawned before M3 or restored from an older run; start a new child",
+      hint: "the child predates the private pipe or was restored from another run; a child cannot be resumed after /reload or a parent restart, so start a new child",
     });
   }
 
