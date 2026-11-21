@@ -362,6 +362,88 @@ test("resultNotification adds details.status and derives resumable from the reco
   assert.ok(!finishedItem.content.includes("note: "));
 });
 
+test("a summarized result previews the persisted summary, not the raw narration", () => {
+  const summary = ["Status: done.", "Changed: src/a.ts:1 — b", "Next: none."].join("\n");
+  const narration = Array.from(
+    { length: 100 },
+    (_, index) => `NARRATION ${index} ${"reading files and thinking ".repeat(6)}`,
+  ).join("\n");
+  const settled = record({
+    turns: [
+      {
+        index: 0,
+        task: "did the thing",
+        startedAt: "2026-11-20T03:40:00.000Z",
+        baselineTurn: 0,
+        state: "completed",
+        outcome: "stop",
+        text: narration,
+        terminal: "t12",
+      },
+    ],
+  });
+  const item = resultNotification(settled, {
+    record: settled,
+    outcome: "stop",
+    state: "completed",
+    result: {
+      content: [],
+      details: recordDetails(settled, {
+        state: "completed",
+        outcome: "stop",
+        text: narration,
+        summarized: true,
+        summary,
+        contentCondensed: true,
+      }),
+    },
+  });
+
+  assert.ok(item.content.includes(summary), "the summary is the preview body");
+  assert.doesNotMatch(item.content, /NARRATION/, "the narration is never re-admitted");
+  assert.ok(Buffer.byteLength(item.content, "utf8") <= ASYNC_CONTENT_MAX_BYTES);
+  assert.equal(item.content.split("\n").at(-1), "Next: none.", "the whole summary fits the preview");
+});
+
+test("handoff rules still apply to the persisted summary preview", () => {
+  const summary = ["Preamble narration.", "", "## Handoff", "### Status", "done", "### Next step", "none"].join("\n");
+  const settled = record({
+    turns: [
+      {
+        index: 0,
+        task: "did the thing",
+        startedAt: "2026-11-20T03:40:00.000Z",
+        baselineTurn: 0,
+        state: "completed",
+        outcome: "stop",
+        text: "raw child text",
+        terminal: "t12",
+      },
+    ],
+  });
+  const item = resultNotification(settled, {
+    record: settled,
+    outcome: "stop",
+    state: "completed",
+    result: {
+      content: [],
+      details: recordDetails(settled, {
+        state: "completed",
+        outcome: "stop",
+        text: "raw child text",
+        summarized: true,
+        summary,
+        handoff: true,
+        contentCondensed: true,
+      }),
+    },
+  });
+
+  assert.match(item.content, /### Status\ndone/);
+  assert.doesNotMatch(item.content, /Preamble narration/);
+  assert.ok(Buffer.byteLength(item.content, "utf8") <= ASYNC_CONTENT_MAX_BYTES);
+});
+
 test("a settled notification previews the handoff and drops the narration", () => {
   const preamble = Array.from({ length: 300 }, (_, index) => `NARRATION ${index} ${"reading files and thinking ".repeat(6)}`);
   const text = [

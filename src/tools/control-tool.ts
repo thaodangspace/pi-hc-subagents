@@ -216,8 +216,20 @@ async function storedResult(
   if (!record.resultFile) return null;
   const stored = await readResultFile(record.resultFile);
   if (!stored) return null;
-  // Computed once: the same selection feeds the content and the two flags.
-  const facing: ModelFacingResult = modelFacingResult(stored.text, { verbosity });
+  // `full` is the escape hatch and always reads the child's own text. Below it,
+  // a persisted summary is the published content, so a re-read is free and
+  // returns what the settle path returned (FR10) instead of calling the model.
+  const persistedSummary =
+    verbosity !== "full" && typeof stored.summary === "string" && stored.summary.trim().length > 0
+      ? stored.summary
+      : undefined;
+  // Computed once: the same selection feeds the content and the two flags. A
+  // persisted summary is never a handoff digest, and it stays `condensed` so the
+  // summarized note fires exactly like it did on the settle path.
+  const facing: ModelFacingResult =
+    persistedSummary === undefined
+      ? modelFacingResult(stored.text, { verbosity })
+      : { ...modelFacingResult(persistedSummary, { verbosity }), handoff: false, condensed: true };
   const details = detailsFor(record, {
     state: stored.state,
     outcome: stored.outcome,
@@ -228,6 +240,13 @@ async function storedResult(
     textTruncated: stored.textTruncated,
     handoff: facing.handoff,
     contentCondensed: facing.condensed,
+    ...(persistedSummary === undefined
+      ? {}
+      : {
+          summarized: true,
+          summary: persistedSummary,
+          ...(stored.summaryUsage === undefined ? {} : { summarizer: stored.summaryUsage }),
+        }),
     ...(stored.error ? { error: stored.error } : {}),
   });
   const content =
@@ -256,6 +275,7 @@ async function storedResult(
           textTruncated: stored.textTruncated,
           error: stored.error ?? undefined,
           ...(verbosity === undefined ? {} : { verbosity }),
+          summarized: persistedSummary !== undefined,
           facing,
         });
   return {

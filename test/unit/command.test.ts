@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 
 import type { NotificationSubscriptionState } from "../../src/child/pipe-transport.ts";
 import { DEFAULT_CONFIG } from "../../src/config/schema.ts";
 import { Registry } from "../../src/runtime/registry.ts";
+import { modelFacingResult } from "../../src/runtime/result-format.ts";
+import { buildResultJson, writeResultFile } from "../../src/runtime/result-store.ts";
 import type { ExtensionRuntime } from "../../src/runtime/runtime.ts";
 import { SettleHintHub } from "../../src/runtime/settle-hints.ts";
 import type { SubagentRecord } from "../../src/runtime/types.ts";
@@ -82,12 +86,19 @@ function hubWithOpenEpisode(childId = "child-1", frameCount = 1): SettleHintHub 
   return hub;
 }
 
-function harness(options: { wakeOnSettle?: boolean; hub?: SettleHintHub; record?: boolean } = {}): {
+function harness(
+  options: {
+    wakeOnSettle?: boolean;
+    hub?: SettleHintHub;
+    record?: boolean;
+    recordOverrides?: Partial<SubagentRecord>;
+  } = {},
+): {
   run: (args: string) => Promise<void>;
   notifications: Array<{ message: string; type?: string }>;
 } {
   const registry = new Registry();
-  if (options.record !== false) registry.create(record());
+  if (options.record !== false) registry.create(record(options.recordOverrides));
   const config = { ...DEFAULT_CONFIG, wakeOnSettle: options.wakeOnSettle ?? true };
   const runtime = {
     available: true,
@@ -201,4 +212,46 @@ test("/hc-subagents config prints the zero line without a hub or children", asyn
     summaryLine(noChildren.notifications),
     "settle hints: mode=push hints=0 wakes=0 falseWakes=0 stale=0 dup=0 reconnects=0 degraded=false",
   );
+});
+
+test("/hc-subagents result prints the persisted summary the model saw", async () => {
+  const root = await mkdtemp(path.join("/tmp", "hc-command-summary-"));
+  const resultFile = path.join(root, "result.json");
+  const summary = [
+    "Status: done.",
+    "Changed: src/ui/command.ts:170 — preferred the persisted summary.",
+    "Next: none.",
+  ].join("\n");
+  const narration = Array.from(
+    { length: 120 },
+    (_, index) => `NARRATION ${index} ${"reading files and thinking ".repeat(6)}`,
+  ).join("\n");
+  try {
+    await writeResultFile(
+      resultFile,
+      buildResultJson({
+        childId: "child-1",
+        turn: 1,
+        state: "completed",
+        outcome: "stop",
+        text: narration,
+        sessionFile: "/runs/run-1/sessions/child-1.jsonl",
+        terminal: "t12",
+        startedAt: "2026-11-20T12:00:00.000Z",
+        settledAt: "2026-11-20T12:01:00.000Z",
+        summary,
+      }),
+    );
+    const harnessed = harness({
+      recordOverrides: { resultFile, state: "completed", terminalState: "finished" },
+    });
+    await harnessed.run("result child-1");
+
+    assert.equal(harnessed.notifications.length, 1);
+    // The command prints the model-facing body, not the child's raw narration.
+    assert.equal(harnessed.notifications[0]?.message, modelFacingResult(summary).text);
+    assert.ok(!(harnessed.notifications[0]?.message ?? "").includes("NARRATION"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -30,7 +30,9 @@ export function resultNotification(record: SubagentRecord, finalized: FinalizeRe
     terminalName: record.terminalName,
     sessionFile: details.sessionFile,
     resultFile: details.resultFile,
-    text: record.turns.at(-1)?.text ?? "",
+    // The persisted summary is the text the tool result published; previewing
+    // it keeps the notification free and identical to the model-facing content.
+    text: details.summary ?? record.turns.at(-1)?.text ?? "",
     textTruncated: details.textTruncated ?? false,
     error: details.error,
     // A live child with a pipe can be resumed, so it may settle and notify again.

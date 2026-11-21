@@ -167,7 +167,9 @@ export function registerHcSubagentsCommand(pi: ExtensionAPI, deps: CommandDeps):
           }
           if (action === "result") {
             const stored = record.resultFile ? await readResultFile(record.resultFile) : null;
-            const text = stored?.text ?? record.turns.at(-1)?.text;
+            // Prefer the persisted summary so the human reads the same text the
+            // model saw; a result without a summary is unchanged.
+            const text = stored?.summary ?? stored?.text ?? record.turns.at(-1)?.text;
             if (!text || text.length === 0) {
               ctx.ui.notify(`${record.slug} has no settled result yet (state: ${record.state}).`, "warning");
               return;
