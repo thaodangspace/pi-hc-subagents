@@ -12,10 +12,12 @@ import { stripControlCharacters } from "../core/jsonl.ts";
 import { updateRunMetadataFile } from "../child/child-spawn.ts";
 import type { ParsedSessionFile } from "../child/session-read.ts";
 import {
+  type ModelFacingResult,
   type SubagentResultDetails,
   detailsText,
   formatFailureContent,
   formatResultContent,
+  modelFacingResult,
   outcomeStatus,
   truncateForModel,
 } from "./result-format.ts";
@@ -198,6 +200,8 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
   const outcome = parsed.outcome === "pending" ? "incomplete" : parsed.outcome;
   const state = parsed.state === "completed" ? "completed" : parsed.state === "cancelled" ? "cancelled" : "failed";
   const textInfo = parsed.text.length > 0 ? detailsText(parsed.text) : { textTruncated: false };
+  // Computed once: the same selection feeds the content and the two flags.
+  const facing: ModelFacingResult = modelFacingResult(parsed.text);
   const updated = session.registry.update(record.childId, {
     state,
     terminalState: terminal.state,
@@ -250,6 +254,8 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
     usage: parsed.usage,
     text: parsed.text,
     textTruncated: textInfo.textTruncated,
+    handoff: facing.handoff,
+    contentCondensed: facing.condensed,
     branchUncertain: parsed.branchUncertain,
     error: parsed.error,
     ...(parsed.error ? { code: "error" } : {}),
@@ -281,6 +287,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
           text: parsed.text,
           textTruncated: textInfo.textTruncated,
           error: parsed.error,
+          facing,
         });
 
   session.persistence?.append(updated);

@@ -361,3 +361,55 @@ test("resultNotification adds details.status and derives resumable from the reco
   });
   assert.ok(!finishedItem.content.includes("note: "));
 });
+
+test("a settled notification previews the handoff and drops the narration", () => {
+  const preamble = Array.from({ length: 300 }, (_, index) => `NARRATION ${index} ${"reading files and thinking ".repeat(6)}`);
+  const text = [
+    ...preamble,
+    "",
+    "## Handoff",
+    "### Status",
+    "done",
+    "### Changed",
+    "- src/a.ts:1 — b",
+    "### Next step",
+    "none",
+  ].join("\n");
+  const content = formatAsyncResultContent({ ...BASE, text });
+  assert.match(content, /### Status\ndone/);
+  assert.match(content, /src\/a\.ts:1/);
+  assert.doesNotMatch(content, /NARRATION/);
+  assert.ok(Buffer.byteLength(content, "utf8") <= ASYNC_CONTENT_MAX_BYTES);
+
+  const settled = record({
+    turns: [
+      {
+        index: 0,
+        task: "did the thing",
+        startedAt: "2026-11-20T03:40:00.000Z",
+        baselineTurn: 0,
+        state: "completed",
+        outcome: "stop",
+        text,
+        terminal: "t12",
+      },
+    ],
+  });
+  const item = resultNotification(settled, {
+    record: settled,
+    outcome: "stop",
+    state: "completed",
+    result: {
+      content: [],
+      details: recordDetails(settled, {
+        state: "completed",
+        outcome: "stop",
+        text,
+        handoff: true,
+        contentCondensed: false,
+      }),
+    },
+  });
+  assert.doesNotMatch(item.content, /NARRATION/);
+  assert.ok(Buffer.byteLength(item.content, "utf8") <= ASYNC_CONTENT_MAX_BYTES);
+});

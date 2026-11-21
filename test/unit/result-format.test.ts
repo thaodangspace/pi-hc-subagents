@@ -1,16 +1,28 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 
+import type { ParsedSessionFile } from "../../src/child/session-read.ts";
+import type { TerminalRecord } from "../../src/core/hc-types.ts";
+import { finalizeFromSession } from "../../src/runtime/finalize.ts";
+import { Registry } from "../../src/runtime/registry.ts";
 import {
+  ASYNC_CONTENT_MAX_BYTES,
   FULL_CONTENT_MAX_BYTES,
   FULL_CONTENT_MAX_LINES,
   PREVIOUS_TASK_MAX_BYTES,
   RESULT_CONTENT_MAX_BYTES,
   RESULT_CONTENT_MAX_LINES,
+  type ResultContentInput,
   condenseByLines,
   extractHandoff,
+  formatAsyncResultContent,
+  formatResultContent,
   modelFacingResult,
 } from "../../src/runtime/result-format.ts";
+import type { SubagentRecord } from "../../src/runtime/types.ts";
+import type { ToolSession } from "../../src/tools/session.ts";
 
 const MARKER =
   /\[\.\.\. report condensed for the caller: \d+ lines dropped, \d+ KiB withheld; full text in the session file \.\.\.\]/;
@@ -34,6 +46,67 @@ function narration(lineCount: number): string {
 }
 
 const THREE_MIB = narration(12_500);
+
+const CONDENSED_NOTE = /^note: the child's report was condensed from \d+ KiB\/\d+ lines; full text is in the session file \(hc_subagent_control result verbosity:"full"\)$/;
+const RAW_FALLBACK_NOTE =
+  /^note: the child did not include a ## Handoff section; this is its raw final message, condensed to the caller budget$/;
+const FULL_BUDGET_NOTE = /^note: the child's report was truncated at the full budget \(\d+ KiB\/\d+ lines\); the session file has the complete text$/;
+
+const PREAMBLE_LINE = "PREAMBLE NARRATION the child narrated at length about reading files";
+
+/** A report whose only useful content is the trailing `## Handoff`. */
+function reportWithHandoff(): string {
+  const preamble = Array.from({ length: 120 }, (_, index) => `${PREAMBLE_LINE} (${index})`);
+  return [
+    ...preamble,
+    "",
+    "## Handoff",
+    "### Status",
+    "done",
+    "### Changed",
+    "- src/runtime/result-format.ts:513 — wired the choke point",
+    "### Findings",
+    "- HANDOFF-FINDING the helper is the only path now",
+    "### Next step",
+    "none",
+  ].join("\n");
+}
+
+/** A handoff body larger than the summary budget but far below the full one. */
+function bigHandoff(findingCount = 400): string {
+  const findings = Array.from({ length: findingCount }, (_, index) => `- finding ${index} ${"detail ".repeat(12)}`);
+  return [
+    PREAMBLE_LINE,
+    "",
+    "## Handoff",
+    "### Status",
+    "done",
+    "### Findings",
+    ...findings,
+    "### Next step",
+    "HANDOFF-TAIL ship it",
+  ].join("\n");
+}
+
+function syncInput(text: string, overrides: Partial<ResultContentInput> = {}): ResultContentInput {
+  return {
+    agent: "reviewer",
+    state: "completed",
+    outcome: "stop",
+    durationMs: 65_000,
+    turns: 1,
+    terminal: "t12",
+    terminalName: "rev-1",
+    sessionFile: "/runs/r1/sessions/child-1.jsonl",
+    resultFile: "/runs/r1/result.json",
+    text,
+    ...overrides,
+  };
+}
+
+function noteLines(content: string): string[] {
+  return content.split("\n").filter((line) => line.startsWith("note: "));
+}
 
 // --- extraction -----------------------------------------------------------
 
@@ -333,4 +406,207 @@ test("constants keep the result, full, and chain budgets separate", () => {
   assert.equal(FULL_CONTENT_MAX_BYTES, 50 * 1024);
   assert.equal(FULL_CONTENT_MAX_LINES, 2000);
   assert.equal(PREVIOUS_TASK_MAX_BYTES, 50 * 1024);
+});
+
+// --- model-facing content and details flags -------------------------------
+
+test("formatResultContent renders the handoff body and none of the preamble", () => {
+  const content = formatResultContent(syncInput(reportWithHandoff()));
+  assert.match(content, /HANDOFF-FINDING the helper is the only path now/);
+  assert.match(content, /src\/runtime\/result-format\.ts:513/);
+  assert.doesNotMatch(content, /PREAMBLE NARRATION/);
+  assert.deepEqual(noteLines(content), [], "a fitting handoff needs no note");
+});
+
+test("formatResultContent explains raw fallback when a non-handoff report is condensed", () => {
+  const text = narration(100);
+  assert.ok(bytes(text) > RESULT_CONTENT_MAX_BYTES);
+  const content = formatResultContent(syncInput(text));
+  assert.ok(bytes(content) <= RESULT_CONTENT_MAX_BYTES + 512);
+  assert.equal(noteLines(content).length, 1);
+  assert.match(noteLines(content)[0]!, RAW_FALLBACK_NOTE);
+  assert.doesNotMatch(content, /the child's report was condensed from/);
+});
+
+test("formatResultContent names the byte/line counts and the full escape hatch", () => {
+  const content = formatResultContent(syncInput(bigHandoff()));
+  const notes = noteLines(content);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0]!, CONDENSED_NOTE);
+  assert.match(notes[0]!, /verbosity:"full"/);
+  assert.doesNotMatch(content, /finding 200 /, "the middle was dropped");
+  assert.match(content.split("\n").at(-2) ?? "", /HANDOFF-TAIL|withheld/);
+});
+
+test("verbosity full restores the handoff at the 50 KiB ceiling", () => {
+  const text = bigHandoff();
+  const handoff = extractHandoff(text) ?? "";
+  assert.ok(bytes(handoff) > RESULT_CONTENT_MAX_BYTES);
+  assert.ok(bytes(handoff) < FULL_CONTENT_MAX_BYTES);
+
+  const summary = formatResultContent(syncInput(text));
+  assert.ok(bytes(summary) <= RESULT_CONTENT_MAX_BYTES + 512);
+
+  const full = formatResultContent(syncInput(text, { verbosity: "full" }));
+  assert.ok(full.endsWith(handoff), "the whole handoff is delivered");
+  assert.match(full, /HANDOFF-TAIL ship it/);
+  assert.match(full, /finding 200 /, "nothing from the handoff was dropped");
+  assert.deepEqual(noteLines(full), [], "no note when full fits");
+});
+
+test("verbosity full on a 300 KiB report stops at the full budget", () => {
+  const text = bigHandoff(4000);
+  assert.ok(bytes(text) > 300 * 1024);
+  const full = formatResultContent(syncInput(text, { verbosity: "full" }));
+  assert.ok(bytes(full) > 40 * 1024, "the escape hatch emits near the ceiling");
+  assert.ok(bytes(full) <= FULL_CONTENT_MAX_BYTES + 512);
+  assert.ok(full.split("\n").length <= FULL_CONTENT_MAX_LINES + 10);
+  assert.equal(noteLines(full).length, 1);
+  assert.match(noteLines(full)[0]!, FULL_BUDGET_NOTE);
+});
+
+test("formatAsyncResultContent previews the handoff only", () => {
+  const content = formatAsyncResultContent({ ...syncInput(reportWithHandoff()), childId: "child-1" });
+  assert.match(content, /HANDOFF-FINDING the helper is the only path now/);
+  assert.doesNotMatch(content, /PREAMBLE NARRATION/);
+  assert.ok(bytes(content) <= ASYNC_CONTENT_MAX_BYTES);
+  assert.equal(content.split("\n").at(-1), "none", "the fitting handoff needs no truncation footer");
+});
+
+test("formatAsyncResultContent keeps the envelope within 8 KiB for an over-budget handoff", () => {
+  const content = formatAsyncResultContent({ ...syncInput(bigHandoff(3000)), childId: "child-1" });
+  assert.ok(bytes(content) <= ASYNC_CONTENT_MAX_BYTES);
+  assert.ok(content.split("\n").length <= 200);
+  assert.doesNotMatch(content, /PREAMBLE NARRATION/);
+  assert.match(content, /### Status/);
+  assert.equal(content.split("\n").at(-1), 'Full result: hc_subagent_control({ action: "result", id: "child-1" })');
+});
+
+const TERMINAL_FIXTURE: TerminalRecord = {
+  address: "t12",
+  name: "rev-1",
+  cwd: "/repo",
+  argv: [],
+  state: "finished",
+  status: null,
+  turn: 1,
+  exitCode: 0,
+  signal: null,
+  parent: null,
+  labels: {},
+  createdMs: 0,
+  finishedMs: 1_000,
+  statusMs: 1_000,
+  reported: false,
+  reason: null,
+  keep: false,
+  rm: false,
+  foreground: null,
+  pid: null,
+  notify: false,
+  identity: "fixture",
+  screen: "",
+};
+
+function recordFixture(): SubagentRecord {
+  return {
+    version: 1,
+    runId: "run-1",
+    childId: "child-1",
+    parentSessionId: "parent-1",
+    agent: "reviewer",
+    agentSource: "user",
+    agentAccess: "read-only",
+    cwd: "/repo",
+    terminal: "t12",
+    terminalName: "rev-1",
+    sessionId: "child-1",
+    sessionFile: null,
+    state: "working",
+    terminalState: "live",
+    coreStatus: "working",
+    slug: "reviewer-a1b2",
+    turn: 1,
+    turns: [],
+    createdAt: "2026-11-20T03:40:00.000Z",
+    updatedAt: "2026-11-20T03:40:00.000Z",
+    labels: {},
+    background: false,
+    origin: "tool",
+  };
+}
+
+function parsedFixture(text: string): ParsedSessionFile {
+  return {
+    state: "completed",
+    outcome: "stop",
+    text,
+    assistantCount: 1,
+    stopReason: "stop",
+    branchUncertain: false,
+    lastAssistantTimestamp: Date.now(),
+    sessionFile: "/runs/r1/sessions/child-1.jsonl",
+    readBytes: 0,
+    fileSize: 0,
+  };
+}
+
+async function finalizeText(text: string) {
+  const root = await mkdtemp(path.join("/tmp", "hc-result-format-"));
+  try {
+    const registry = new Registry();
+    const record = registry.create(recordFixture());
+    const session = { registry } as unknown as ToolSession;
+    return await finalizeFromSession({
+      session,
+      record,
+      terminal: TERMINAL_FIXTURE,
+      parsed: parsedFixture(text),
+      turnStartedAtMs: 0,
+      resultFile: path.join(root, "result.json"),
+      fallbackOutcome: "incomplete",
+      fallbackError: "unused",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("details keep neither flag for a short result", async () => {
+  const finalized = await finalizeText("Looks good.");
+  assert.equal(finalized.result.details.handoff, false);
+  assert.equal(finalized.result.details.contentCondensed, false);
+  assert.equal(finalized.result.details.textTruncated, false);
+  assert.equal(finalized.result.details.text, "Looks good.");
+});
+
+test("details set handoff for a handoff report and still keep the full text", async () => {
+  const text = reportWithHandoff();
+  const finalized = await finalizeText(text);
+  assert.equal(finalized.result.details.handoff, true);
+  assert.equal(finalized.result.details.contentCondensed, false);
+  assert.equal(finalized.result.details.textTruncated, false);
+  assert.equal(finalized.result.details.text, text, "details.text stays the full child text");
+  const content = finalized.result.content[0]!.text;
+  assert.match(content, /HANDOFF-FINDING/);
+  assert.doesNotMatch(content, /PREAMBLE NARRATION/);
+});
+
+test("details set contentCondensed for an over-budget non-handoff report without touching textTruncated", async () => {
+  const text = narration(100);
+  assert.ok(bytes(text) > RESULT_CONTENT_MAX_BYTES && bytes(text) < 50 * 1024);
+  const finalized = await finalizeText(text);
+  assert.equal(finalized.result.details.handoff, false);
+  assert.equal(finalized.result.details.contentCondensed, true);
+  assert.equal(finalized.result.details.textTruncated, false, "details fit the 50 KiB cap");
+  assert.equal(finalized.result.details.text, text);
+  const content = finalized.result.content[0]!.text;
+  assert.ok(bytes(content) <= RESULT_CONTENT_MAX_BYTES + 512);
+  assert.match(noteLines(content)[0]!, RAW_FALLBACK_NOTE);
+
+  const oversized = narration(400);
+  assert.ok(bytes(oversized) > 50 * 1024);
+  const capped = await finalizeText(oversized);
+  assert.equal(capped.result.details.contentCondensed, true);
+  assert.equal(capped.result.details.textTruncated, true, "textTruncated still means the details cap");
 });

@@ -19,12 +19,14 @@ import { stripControlCharacters } from "../core/jsonl.ts";
 import type { TerminalRecord } from "../core/hc-types.ts";
 import { formatCandidates, resolveChildId } from "../runtime/id-resolve.ts";
 import {
+  type ModelFacingResult,
   type SubagentResultDetails,
   detailsText,
   formatBlockedContent,
   formatFailureContent,
   formatPendingContent,
   formatResultContent,
+  modelFacingResult,
   truncateForModel,
 } from "../runtime/result-format.ts";
 import { readResultFile } from "../runtime/result-store.ts";
@@ -200,6 +202,8 @@ async function storedResult(session: ToolSession, record: SubagentRecord): Promi
   if (!record.resultFile) return null;
   const stored = await readResultFile(record.resultFile);
   if (!stored) return null;
+  // Computed once: the same selection feeds the content and the two flags.
+  const facing: ModelFacingResult = modelFacingResult(stored.text);
   const details = detailsFor(record, {
     state: stored.state,
     outcome: stored.outcome,
@@ -208,6 +212,8 @@ async function storedResult(session: ToolSession, record: SubagentRecord): Promi
     usage: stored.usage,
     text: stored.text,
     textTruncated: stored.textTruncated,
+    handoff: facing.handoff,
+    contentCondensed: facing.condensed,
     ...(stored.error ? { error: stored.error } : {}),
   });
   const content =
@@ -235,6 +241,7 @@ async function storedResult(session: ToolSession, record: SubagentRecord): Promi
           text: stored.text,
           textTruncated: stored.textTruncated,
           error: stored.error ?? undefined,
+          facing,
         });
   return {
     record,
