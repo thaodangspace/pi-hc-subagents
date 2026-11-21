@@ -200,6 +200,17 @@ ceiling, so it measures the price of isolation, not a quality gain.
 
 - `Model "x" not found` in a child: the tool call omitted `model`, so the child
   used pi's default. The harness pins it; a custom prompt must too.
+- Child fails with `no session file appeared` and zero usage: the child model is
+  not resolvable under the run's agent dir. `BENCH_ISOLATE_AGENT_DIR=1` copies
+  only `auth.json`/`models*.json`, so providers registered by an installed pi
+  extension (for example `oc-sdk-go` from `pi-opencode-bridge`) are absent — use
+  the built-in provider for the same model, or drop the isolation flag. The
+  harness now runs `pi auth check --model` for the parent and routing child
+  before spending.
+- `Insufficient Balance` (or any provider quota error) aborts the meaningful
+  part of a run: every later trial fails with zero usage and is recorded as
+  unresolved. Top up, switch `BENCH_MODEL`, or lower the task set before
+  drawing conclusions from such a report.
 - Child `state: failed` with zero usage and a provider error: the run is recorded
   as unresolved with its cost, which is correct — failing fast is not a win.
 - `hc` missing: only `subagent` needs a core; `solo` still runs.

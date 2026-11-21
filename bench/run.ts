@@ -483,6 +483,41 @@ async function gitCommit(): Promise<string | null> {
   }
 }
 
+/**
+ * Fail before spending anything if the model cannot resolve under the agent
+ * dir this run will use. Extension-provided providers (settings.json packages)
+ * are absent under `BENCH_ISOLATE_AGENT_DIR=1`, which otherwise surfaces as a
+ * child that starts and dies with "no session file appeared".
+ */
+export async function checkModelAvailable(options: {
+  piPath: string;
+  model: string;
+  /** null means "inherit the ambient agent dir", matching prepareAgentDir. */
+  agentDir: string | null;
+}): Promise<string | null> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const env = { ...process.env };
+  if (options.agentDir) env.PI_CODING_AGENT_DIR = options.agentDir;
+  try {
+    await promisify(execFile)(options.piPath, ["auth", "check", "--model", options.model], {
+      env,
+      timeout: 60_000,
+    });
+    return null;
+  } catch (error) {
+    const record = error as { stderr?: unknown; stdout?: unknown };
+    const detail = [record.stderr, record.stdout]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.trim())
+      .join(" ");
+    return (
+      `model ${options.model} is not usable with this run's agent dir (${(detail || String(error)).slice(0, 300)}). ` +
+      "Extension-provided providers are absent under BENCH_ISOLATE_AGENT_DIR=1; use a built-in provider or unset it."
+    );
+  }
+}
+
 function armOrder(arm: Arm, trial: number): number {
   if (arm === "transcript") return 4;
   const order: Arm[] = trial % 2 === 0 ? ["solo", "subagent", "routing"] : ["routing", "subagent", "solo"];
@@ -506,6 +541,15 @@ export async function run(config: BenchConfig): Promise<{ outputDir: string; rec
   const agentFile = path.resolve(REPO_ROOT, "agents", `${suite.agent}.md`);
   const agentRaw = await readFile(agentFile, "utf8");
   try {
+  if (!config.dryRun) {
+    const routingChild = config.arms.includes("routing") ? config.childModel : null;
+    const models: string[] = [config.model];
+    if (routingChild) models.push(routingChild);
+    for (const model of models) {
+      const problem = await checkModelAvailable({ piPath: config.piPath, model, agentDir: agentDir.path });
+      if (problem) throw new Error(problem);
+    }
+  }
   const metadata: RunMetadata = {
     startedAt: new Date().toISOString(),
     model: config.model,
@@ -671,7 +715,12 @@ async function main(): Promise<void> {
     process.stderr.write(`${result.error}\n`);
     process.exit(2);
   }
-  await run(result.config);
+  try {
+    await run(result.config);
+  } catch (error) {
+    process.stderr.write(`bench failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

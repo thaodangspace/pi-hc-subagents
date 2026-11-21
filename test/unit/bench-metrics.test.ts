@@ -24,7 +24,7 @@ import {
   wilsonInterval,
 } from "../../bench/metrics.ts";
 import { renderReport, renderScatterSvg, renderTrialsCsv } from "../../bench/report.ts";
-import { loadConfig } from "../../bench/run.ts";
+import { checkModelAvailable, loadConfig } from "../../bench/run.ts";
 import { parseSuite, verifyAnswer } from "../../bench/tasks.ts";
 import {
   type TrialRecord,
@@ -331,6 +331,23 @@ test("loadConfig fails closed without an explicit opt-in and a model", () => {
     assert.deepEqual(ok.config.arms, ["solo", "subagent", "transcript"]);
     assert.equal(ok.config.childModel, null);
     assert.equal(ok.config.extensionPath.endsWith("index.ts"), true);
+  }
+});
+
+test("checkModelAvailable rejects a model the run's agent dir cannot resolve", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hc-bench-auth-"));
+  try {
+    const okPath = path.join(root, "pi-ok");
+    const badPath = path.join(root, "pi-bad");
+    await writeFile(okPath, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await writeFile(badPath, "#!/bin/sh\necho invalid >&2\nexit 2\n", { mode: 0o700 });
+    assert.equal(await checkModelAvailable({ piPath: okPath, model: "test/model", agentDir: root }), null);
+    const problem = await checkModelAvailable({ piPath: badPath, model: "test/model", agentDir: root });
+    assert.ok(problem);
+    assert.match(problem, /not usable/);
+    assert.match(problem, /BENCH_ISOLATE_AGENT_DIR/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
