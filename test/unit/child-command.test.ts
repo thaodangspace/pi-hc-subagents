@@ -5,7 +5,7 @@ import test from "node:test";
 
 import type { AgentDefinition } from "../../src/agents/agents.ts";
 import { HcSubagentError } from "../../src/core/error.ts";
-import { CHILD_ENTRY, buildSpawnPlan, isCwdInside, MAX_TASK_BYTES } from "../../src/child/child-command.ts";
+import { CHILD_ENTRY, buildSpawnPlan, isCwdInside, MAX_SYSTEM_BYTES, MAX_TASK_BYTES } from "../../src/child/child-command.ts";
 import { buildSystemFile, buildTaskFile, DELEGATION_CONTRACT } from "../../src/child/child-prompt.ts";
 import { createRunPaths, sanitizeSessionName, sanitizeTerminalName } from "../../src/child/paths.ts";
 import { getPiInvocation } from "../../src/child/pi-invocation.ts";
@@ -443,6 +443,34 @@ test("task and system files contain the delegation contract", () => {
   assert.match(task, /Find the bug\nin parser/);
   const system = buildSystemFile("");
   assert.equal(system.trim(), DELEGATION_CONTRACT);
+});
+
+test("delegation contract requires the handoff shape, budget, and prohibitions", () => {
+  assert.match(DELEGATION_CONTRACT, /^## Handoff$/m);
+  assert.equal(DELEGATION_CONTRACT.match(/^## Handoff$/gm)?.length, 1);
+  for (const heading of ["### Status", "### Changed", "### Findings", "### Next step"]) {
+    assert.ok(DELEGATION_CONTRACT.includes(heading), `missing ${heading}`);
+  }
+  assert.match(DELEGATION_CONTRACT, /~1500 tokens \(about 6 KiB\)/);
+  assert.ok(DELEGATION_CONTRACT.includes("Never paste file contents"));
+  assert.ok(DELEGATION_CONTRACT.includes("diffs"));
+  assert.ok(DELEGATION_CONTRACT.includes("logs"));
+  assert.ok(DELEGATION_CONTRACT.includes("command output"));
+  assert.ok(DELEGATION_CONTRACT.includes("JSON blobs"));
+  assert.ok(DELEGATION_CONTRACT.includes("Keep the whole final message within"));
+  assert.ok(DELEGATION_CONTRACT.includes("caller sees only your final message"));
+  assert.ok(DELEGATION_CONTRACT.includes("(more in the session file)"));
+  assert.ok(DELEGATION_CONTRACT.includes("(no files changed)"));
+});
+
+test("system file stays within MAX_SYSTEM_BYTES with a 60 KiB agent prompt", () => {
+  const agentPrompt = "x".repeat(60 * 1024);
+  const system = buildSystemFile(agentPrompt);
+  const bytes = Buffer.byteLength(system, "utf8");
+  assert.ok(system.startsWith(agentPrompt));
+  assert.match(system, /\n\n---\n\n## Delegation contract\n\n/);
+  assert.ok(system.trimEnd().endsWith(DELEGATION_CONTRACT));
+  assert.ok(bytes < MAX_SYSTEM_BYTES, `system prompt is ${bytes} bytes; maximum is ${MAX_SYSTEM_BYTES}`);
 });
 
 test("getPiInvocation prefers the running script and falls back safely", () => {
