@@ -275,6 +275,10 @@ export interface PendingContentInput {
   sessionFile: string | null;
   durationMs: number;
   reason: "startup_timeout" | "wait_timeout" | "terminal_lost";
+  /** True when a monitor will deliver the eventual result as a custom message. */
+  monitoring?: boolean;
+  /** True when a monitor watches the child in the background without notifying. */
+  tracked?: boolean;
 }
 
 export function formatPendingContent(input: PendingContentInput): string {
@@ -294,6 +298,13 @@ export function formatPendingContent(input: PendingContentInput): string {
   if (input.sessionFile) lines.push(`session: ${input.sessionFile}`);
   lines.push("");
   lines.push(`Reason: ${reason}. The child was left alive for inspection.`);
+  if (input.monitoring) {
+    lines.push("The child is still being monitored; its result will be delivered as a custom message.");
+  } else if (input.tracked) {
+    lines.push("The child is still tracked in the background; use hc_subagent_control wait or result to collect its result later.");
+  } else {
+    lines.push("This wait did not leave a monitor running; use hc_subagent_control wait or result to collect it later.");
+  }
   lines.push(`Attach: hc attach ${input.terminal}`);
   return lines.join("\n");
 }

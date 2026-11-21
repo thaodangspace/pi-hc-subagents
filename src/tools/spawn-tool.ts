@@ -23,6 +23,7 @@ import { locateSessionFile } from "../child/session-locate.ts";
 import { parseSessionWithRetry, type ParsedSessionFile } from "../child/session-read.ts";
 import { abortChild, waitForChild } from "../child/wait-child.ts";
 import { describeHcError, toHcSubagentError } from "../core/error.ts";
+import type { TerminalRecord } from "../core/hc-types.ts";
 import type { SubagentRecord } from "../runtime/types.ts";
 import { updateCurrentTurns } from "../runtime/types.ts";
 import {
@@ -87,6 +88,8 @@ export const SPAWN_PROMPT_SNIPPET =
 
 export const SPAWN_PROMPT_GUIDELINES = [
   "Use hc_subagent only for self-contained tasks that benefit from an isolated context; include paths, constraints, and acceptance criteria.",
+  "Pick the `agent` name from the <hc-subagents-agents> catalog instead of guessing; pass agentScope to widen discovery when the needed agent is missing.",
+  "A child cannot be resumed after /reload or a parent restart; use hc_subagent_control send only while the child is live, otherwise start a new child.",
   "Use hc_subagent with a read-only agent for review/scout work; do not run parallel write-capable agents in the same cwd.",
   "Use tasks for parallel read-only work and chain when a later step needs the previous result; {previous} is replaced in the task text.",
   "If hc_subagent returns blocked, ask the user to attach and answer; never answer permission dialogs on the user's behalf.",
@@ -404,6 +407,54 @@ export function registerSpawnTool(
 
         const wake = wakeSourceFor(session.settleHints, record.childId);
 
+        // A foreground wait can return while the child is still live (timeout
+        // or blocked). Keep the scheduler slot owned by the child and watch it
+        // in the background, otherwise a write-capable child could overlap a
+        // later write in the same cwd after the tool call has returned.
+        const startKeepAliveMonitor = (
+          current: SubagentRecord,
+          terminal: TerminalRecord,
+          notify: boolean,
+        ): { monitoring: boolean; tracked: boolean } => {
+          if (!session.monitors || terminal.state === "finished") {
+            return { monitoring: false, tracked: false };
+          }
+          const monitorLocate = new AbortController();
+          const slot = release;
+          release = null;
+          const monitorMachine = new ChildStateMachine({
+            baselineTurn: terminal.turn,
+            // The original wait already timed out; this monitor must not
+            // immediately re-fire the same deadline.
+            startupTimeoutMs: Number.MAX_SAFE_INTEGER,
+            waitTimeoutMs: Number.MAX_SAFE_INTEGER,
+            initialPhase: current.state === "starting" ? "starting" : "working",
+            startedAtMs: Date.now(),
+          });
+          session.monitors.start({
+            session,
+            record: current,
+            terminal,
+            machine: monitorMachine,
+            turnStartedAtMs,
+            resultFile: paths.resultFile,
+            locate: () =>
+              locateSessionFile({
+                sessionDir: paths.sessionDir,
+                childId: paths.childId,
+                signal: monitorLocate.signal,
+              }),
+            cancelLocate: () => monitorLocate.abort(),
+            ...(slot === null ? {} : { release: slot }),
+            pollIntervalMs: runtime.config.pollIntervalMs,
+            ...(wake === undefined ? {} : { wake }),
+            hooks: defaultMonitorHooks(session, { notify }),
+          });
+          session.persistence?.append(current);
+          session.onRecordChange?.(current);
+          return { monitoring: notify, tracked: !notify };
+        };
+
         if (background) {
           const releaseSlot = release;
           release = null;
@@ -531,7 +582,14 @@ export function registerSpawnTool(
             coreStatus: "blocked",
             sessionFile: updated.sessionFile,
           });
-          session.service?.emitBlocked(updated, kind, message, 1);
+          const episode = outcome.transition.type === "blocked" ? outcome.transition.episode : 1;
+          session.service?.emitBlocked(updated, kind, message, episode);
+          // The sync result already reports this blocked episode. A keep-alive
+          // monitor must not notify it again, but it still owns the slot.
+          session.notifier?.markBlockedDelivered(updated, episode);
+          if (finalTerminal) {
+            startKeepAliveMonitor(updated, finalTerminal, runtime.config.monitorAfterReturn);
+          }
           const details = recordDetails(updated, {
             state: "blocked",
             outcome: "blocked",
@@ -660,6 +718,24 @@ export function registerSpawnTool(
             coreStatus: updated.coreStatus,
             sessionFile: updated.sessionFile,
           });
+
+          // A timeout is a check-in, not a failure. Keep the scheduler slot
+          // owned by the still-live child and watch it in the background so a
+          // write-capable child cannot overlap a later write in the same cwd.
+          // The result is published either way; only `monitorAfterReturn`
+          // decides whether the parent gets an async notification.
+          let monitoring = false;
+          let tracked = false;
+          if (!runtime.config.killOnTimeout && finalTerminal) {
+            const kept = startKeepAliveMonitor(
+              updated,
+              finalTerminal,
+              runtime.config.monitorAfterReturn,
+            );
+            monitoring = kept.monitoring;
+            tracked = kept.tracked;
+          }
+
           const details = recordDetails(updated, {
             state,
             outcome: "timeout",
@@ -678,6 +754,8 @@ export function registerSpawnTool(
                   sessionFile: updated.sessionFile,
                   durationMs: details.durationMs,
                   reason: outcome.kind,
+                  monitoring,
+                  tracked,
                 }),
               },
             ],

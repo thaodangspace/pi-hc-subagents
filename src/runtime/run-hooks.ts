@@ -6,7 +6,17 @@ import type { FinalizeResult } from "./finalize.ts";
 import { blockedNotification, resultNotification } from "./notification.ts";
 import type { ToolSession } from "../tools/session.ts";
 
-export function defaultMonitorHooks(session: ToolSession): MonitorHooks {
+export interface MonitorHookOptions {
+  /**
+   * Whether settle/blocked events should enqueue a parent notification.
+   * A foreground wait that timed out still gets a monitor, but its result is
+   * only delivered asynchronously when `monitorAfterReturn` is enabled.
+   */
+  notify?: boolean;
+}
+
+export function defaultMonitorHooks(session: ToolSession, options: MonitorHookOptions = {}): MonitorHooks {
+  const notify = options.notify ?? true;
   return {
     onStateChange(record, previousState) {
       try {
@@ -22,7 +32,7 @@ export function defaultMonitorHooks(session: ToolSession): MonitorHooks {
       } catch {
         // Events never break a monitor.
       }
-      if (session.runtime.config.notify !== "none") {
+      if (notify && session.runtime.config.notify !== "none") {
         try {
           session.notifier?.enqueue(blockedNotification(record, episode, kind, message, screenTail));
         } catch {
@@ -38,7 +48,7 @@ export function defaultMonitorHooks(session: ToolSession): MonitorHooks {
       } catch {
         // Events never break a monitor.
       }
-      if (session.runtime.config.notify !== "none") {
+      if (notify && session.runtime.config.notify !== "none") {
         try {
           session.notifier?.enqueue(resultNotification(finalized.record, finalized));
         } catch {
