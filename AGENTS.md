@@ -82,6 +82,9 @@ them at the developer's default core.
   sleep; `terminal.get` plus the state machine stay authoritative, `pollIntervalMs`
   remains the fallback, and a lost or degraded channel is never evidence that the child
   died. `wakeOnSettle: false` constructs no hub and is byte-identical to poll-only.
+- **Result notifications are settle-scoped.** A result is deduped per settle
+  (`childId:turn:result:<settledAt>`), not per `hc` turn, so a follow-up settle is
+  delivered and a replay of one publish is not (SPEC §16.2).
 - **External parent mode.** Without `HC_TERMINAL_ID`, children are parented to
   `hc.parentTerminal` / `PI_HC_SUBAGENTS_PARENT_TERMINAL` when set, else started with
   `no_parent: true` (root terminals). The extension still kills owned children on

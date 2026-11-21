@@ -16,6 +16,7 @@ import {
   detailsText,
   formatFailureContent,
   formatResultContent,
+  outcomeStatus,
   truncateForModel,
 } from "./result-format.ts";
 import { buildResultJson, writeResultFile } from "./result-store.ts";
@@ -66,6 +67,9 @@ export function recordDetails(
     ...(record.signal === undefined ? {} : { signal: record.signal }),
     background: record.background,
     ...(record.observedBy === undefined ? {} : { observedBy: record.observedBy }),
+    ...(overrides.outcome !== undefined && overrides.outcome !== null && overrides.outcome !== "pending"
+      ? { status: outcomeStatus(overrides.outcome) }
+      : {}),
     ...(overrides.text === undefined ? {} : textInfo),
     ...overrides,
   };

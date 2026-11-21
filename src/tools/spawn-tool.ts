@@ -700,7 +700,7 @@ export function registerSpawnTool(
             fallbackOutcome: "exited",
             fallbackError: "terminal was removed or could not be found",
           });
-          session.notifier?.markDelivered(finalized.record.childId, finalized.record.turn, "result");
+          session.notifier?.markResultDelivered(finalized.record);
           session.service?.emitSettled(finalized);
           session.onRecordChange?.(finalized.record);
           return finalized.result;
@@ -741,7 +741,7 @@ export function registerSpawnTool(
                 : "terminal exited before producing a result",
             ...(parseError === undefined ? {} : { parseError }),
           });
-          session.notifier?.markDelivered(finalized.record.childId, finalized.record.turn, "result");
+          session.notifier?.markResultDelivered(finalized.record);
           session.service?.emitSettled(finalized);
           session.onRecordChange?.(finalized.record);
           return finalized.result;
@@ -758,7 +758,7 @@ export function registerSpawnTool(
           fallbackError: parseError ?? "no session result",
           ...(parseError === undefined ? {} : { parseError }),
         });
-        session.notifier?.markDelivered(finalized.record.childId, finalized.record.turn, "result");
+        session.notifier?.markResultDelivered(finalized.record);
         session.service?.emitSettled(finalized);
         session.onRecordChange?.(finalized.record);
 

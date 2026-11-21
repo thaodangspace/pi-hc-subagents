@@ -288,7 +288,7 @@ async function waitAction(
   if (isTerminalRecord(record)) {
     const stored = await storedResult(session, record);
     if (stored) {
-      session.notifier?.markDelivered(record.childId, record.turn, "result");
+      session.notifier?.markResultDelivered(stored.record);
       return stored.result;
     }
     const existing = await session.runtime.core.tryGet(record.terminal);
@@ -300,7 +300,7 @@ async function waitAction(
       );
     }
     const collected = await collectResult(session, record, existing, true);
-    session.notifier?.markDelivered(record.childId, record.turn, "result");
+    session.notifier?.markResultDelivered(collected.record);
     return collected.result;
   }
 
@@ -340,7 +340,7 @@ async function waitAction(
     case "settled":
     case "exited": {
       const collected = await collectResult(session, record, outcome.terminal, true);
-      session.notifier?.markDelivered(record.childId, record.turn, "result");
+      session.notifier?.markResultDelivered(collected.record);
       return collected.result;
     }
     case "blocked": {
@@ -457,7 +457,7 @@ async function resultAction(
 ): Promise<AgentToolResult<SubagentResultDetails>> {
   const stored = await storedResult(session, record);
   if (stored) {
-    session.notifier?.markDelivered(record.childId, record.turn, "result");
+    session.notifier?.markResultDelivered(stored.record);
     return stored.result;
   }
   if (isTerminalRecord(record)) {
@@ -470,7 +470,7 @@ async function resultAction(
       );
     }
     const collected = await collectResult(session, record, terminal, true);
-    session.notifier?.markDelivered(record.childId, record.turn, "result");
+    session.notifier?.markResultDelivered(collected.record);
     return collected.result;
   }
 
@@ -499,7 +499,7 @@ async function resultAction(
     );
   }
   const collected = await collectResult(session, record, terminal, false);
-  session.notifier?.markDelivered(record.childId, record.turn, "result");
+  session.notifier?.markResultDelivered(collected.record);
   return collected.result;
 }
 
@@ -578,7 +578,7 @@ async function killAction(
       settledAt: now,
     }).catch(() => {});
   }
-  session.notifier?.markDelivered(updated.childId, updated.turn, "result");
+  session.notifier?.markResultDelivered(updated);
   session.service?.emitCancelled(updated);
   session.persistence?.append(updated);
   session.onRecordChange?.(updated);
@@ -606,7 +606,7 @@ async function sendAction(
     });
 
     if (outcome.finalized) {
-      session.notifier?.markDelivered(outcome.record.childId, outcome.record.turn, "result");
+      session.notifier?.markResultDelivered(outcome.record);
       return outcome.finalized.result;
     }
 

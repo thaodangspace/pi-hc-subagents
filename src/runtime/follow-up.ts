@@ -243,7 +243,7 @@ export async function sendFollowUp(
       true,
       0,
     );
-    session.notifier?.markDelivered(finalized.record.childId, finalized.record.turn, "result");
+    session.notifier?.markResultDelivered(finalized.record);
     session.service?.emitSettled(finalized);
     session.persistence?.append(finalized.record);
     session.onRecordChange?.(finalized.record);
@@ -256,7 +256,7 @@ export async function sendFollowUp(
     outcome.terminal,
     true,
   );
-  session.notifier?.markDelivered(finalized.record.childId, finalized.record.turn, "result");
+  session.notifier?.markResultDelivered(finalized.record);
   session.service?.emitSettled(finalized);
   session.persistence?.append(finalized.record);
   session.onRecordChange?.(finalized.record);

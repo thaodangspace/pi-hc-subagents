@@ -13,6 +13,8 @@ interface HcMessageDetails {
   agent?: string;
   state?: string;
   outcome?: string | null;
+  /** Outcome word from the result details; preferred over the raw `outcome`. */
+  status?: string;
   terminal?: string;
   sessionFile?: string | null;
   resultFile?: string | null;
@@ -36,12 +38,39 @@ function preview(text: string, limit = 600): string {
   return `${text.slice(0, limit)}…\n${text.slice(-200)}`;
 }
 
+/** Compact card titles stay on one line and never split a word. */
+export const TITLE_MAX_CHARS = 72;
+
+function boundedTitle(title: string, limit = TITLE_MAX_CHARS): string {
+  const flat = title.replace(/\s+/g, " ").trim();
+  if (flat.length <= limit) return flat;
+  const cut = flat.slice(0, limit - 1);
+  const lastSpace = cut.lastIndexOf(" ");
+  const head = lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
+  return `${head.trimEnd()}…`;
+}
+
+/**
+ * Outcome word for a card title.
+ *
+ * `details.status` is the outcome word the model reads in the notification
+ * content; `details.outcome` is the raw pi turn outcome (`stop`, `length`, …)
+ * and is only a fallback for older detail objects. The renderer never parses
+ * the content string for this.
+ */
+function statusWord(details: { status?: unknown; outcome?: unknown }): string {
+  if (typeof details.status === "string" && details.status.length > 0) return details.status;
+  if (typeof details.outcome === "string" && details.outcome.length > 0) return details.outcome;
+  return "";
+}
+
 export interface ToolResultLike {
   content?: Array<{ type: string; text?: string }>;
   details?: {
     agent?: string;
     state?: string;
     outcome?: string | null;
+    status?: string;
     terminal?: string;
     durationMs?: number;
     usage?: { totalTokens?: number };
@@ -64,8 +93,10 @@ export function renderSubagentToolResult(
     typeof details.durationMs === "number" && Number.isFinite(details.durationMs)
       ? ` · ${Math.max(0, Math.round(details.durationMs / 1000))}s`
       : "";
-  const title = `${icon} ${details.agent ?? "subagent"} ${details.state ?? ""}${details.outcome ? ` (${details.outcome})` : ""}${duration}`;
-  const lines = [theme.fg(color, title)];
+  const outcome = statusWord(details);
+  const outcomeTag = outcome && outcome !== details.state ? ` (${outcome})` : "";
+  const title = `${icon} ${details.agent ?? "subagent"} ${details.state ?? ""}${outcomeTag}${duration}`;
+  const lines = [theme.fg(color, boundedTitle(title))];
   if (details.terminal) lines.push(theme.fg("dim", `${details.terminal}${details.background ? " · background" : ""}`));
   if (options.expanded) {
     const body = (result.content ?? []).map((part) => part.text ?? "").join("\n").trim();
@@ -81,11 +112,14 @@ export function renderSubagentToolResult(
 export function registerHcSubagentsRenderers(pi: ExtensionAPI): void {
   pi.registerMessageRenderer(ASYNC_MESSAGE_TYPE, (message, options, theme) => {
     const details = (message.details ?? {}) as HcMessageDetails;
+    const outcome = statusWord(details);
     const title = details.summary
       ? "[hc-subagents] more results are ready"
-      : `[hc-subagents] ${details.agent ?? "child"} ${details.state ?? ""}${details.outcome ? ` (${details.outcome})` : ""}`.trim();
+      : `[hc-subagents] ${details.agent ?? "child"} ${details.state ?? ""}${
+          outcome && outcome !== details.state ? ` (${outcome})` : ""
+        }`.trim();
     const body = bodyText(message.content);
-    const lines = [theme.fg(details.state === "blocked" ? "warning" : "accent", title)];
+    const lines = [theme.fg(details.state === "blocked" ? "warning" : "accent", boundedTitle(title))];
     lines.push(options.expanded ? body : preview(body));
     if (details.terminal) lines.push(theme.fg("dim", `terminal: ${details.terminal}`));
     if (options.expanded && details.resultFile) lines.push(theme.fg("dim", `result: ${details.resultFile}`));

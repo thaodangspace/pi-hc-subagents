@@ -7,6 +7,7 @@
 import type { FinalizeResult } from "./finalize.ts";
 import { recordDetails } from "./finalize.ts";
 import type { NotificationItem } from "./notifier.ts";
+import { blockedEpisodeKey, resultDeliveryKey } from "./notifier.ts";
 import {
   ASYNC_CONTENT_MAX_BYTES,
   formatAsyncResultContent,
@@ -32,6 +33,8 @@ export function resultNotification(record: SubagentRecord, finalized: FinalizeRe
     text: record.turns.at(-1)?.text ?? "",
     textTruncated: details.textTruncated ?? false,
     error: details.error,
+    // A live child with a pipe can be resumed, so it may settle and notify again.
+    resumable: record.terminalState === "live" && Boolean(record.pipeName),
   });
   return {
     type: "result",
@@ -43,6 +46,7 @@ export function resultNotification(record: SubagentRecord, finalized: FinalizeRe
     terminal: record.terminal,
     content,
     details,
+    deliveryKey: resultDeliveryKey(finalized.record),
   };
 }
 
@@ -84,6 +88,6 @@ export function blockedNotification(
     terminal: record.terminal,
     content: bounded.text,
     details,
-    key: `${record.childId}:${record.turn}:blocked:${episode}`,
+    deliveryKey: blockedEpisodeKey(record, episode),
   };
 }

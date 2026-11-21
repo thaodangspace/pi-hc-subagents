@@ -404,7 +404,7 @@ export class IntertoolServiceV1 implements HcSubagentsService {
         if (isTerminalState(result.state)) {
           this.#emitProviderTerminal(updated, result.outcome, result.resultFile ?? updated.resultFile ?? "", result.error);
           this.#providerChildren.delete(record.childId);
-          this.#session.notifier?.markDelivered(updated.childId, updated.turn, "result");
+          this.#session.notifier?.markResultDelivered(updated);
         } else if (result.state === "blocked") {
           this.#providerChildren.set(record.childId, handle);
           this.emitBlocked(updated, result.blocked?.kind, result.blocked?.message, updated.turn);
@@ -427,7 +427,8 @@ export class IntertoolServiceV1 implements HcSubagentsService {
       ...(opts.signal === undefined ? {} : { signal: opts.signal }),
     });
     if (isTerminalState(result.state)) {
-      this.#session.notifier?.markDelivered(record.childId, record.turn, "result");
+      // The wait published through the registry, so key the settle from there.
+      this.#session.notifier?.markResultDelivered(this.#session.registry.get(record.childId) ?? record);
     }
     return result;
   }
@@ -456,7 +457,7 @@ export class IntertoolServiceV1 implements HcSubagentsService {
       ...(opts.signal === undefined ? {} : { signal: opts.signal }),
     });
     if (outcome.finalized) {
-      this.#session.notifier?.markDelivered(outcome.record.childId, outcome.record.turn, "result");
+      this.#session.notifier?.markResultDelivered(outcome.record);
       return {
         childId: outcome.record.childId,
         turn: outcome.record.turn,
@@ -722,7 +723,7 @@ export class IntertoolServiceV1 implements HcSubagentsService {
       const updated = this.#applyProviderResult(record, outcome.result);
       if (isTerminalState(updated.state)) {
         this.#emitProviderTerminal(updated, outcome.result.outcome, outcome.result.resultFile ?? updated.resultFile ?? "", outcome.result.error);
-        this.#session.notifier?.markDelivered(updated.childId, updated.turn, "result");
+        this.#session.notifier?.markResultDelivered(updated);
       }
       return outcome.result;
     }
