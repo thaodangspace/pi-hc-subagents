@@ -43,6 +43,8 @@ them at the developer's default core.
 | `src/runtime/agent-catalog.ts` | Bounded agent name/description catalog injected through `before_agent_start`; lazy refresh, omitted in child mode. |
 | `src/runtime/wake-gate.ts` | Shared timer/wake/abort wait primitive used by monitors and synchronous waits; a hint shortens a wait but never decides a state. |
 | `src/runtime/result-format.ts` | The single model-facing content boundary: handoff extraction, whole-line condensation, the 8 KiB/50 KiB budgets, and the result envelope; `details` flags describe the content it rendered. |
+| `src/runtime/summarizer.ts` | Opt-in, gated single-shot report summarizer: the gates, 128 KiB in / 4 KiB out, the 10 s deadline, one call per settled turn, and stable fallback codes. No pi import, no network, no filesystem. |
+| `src/runtime/summarizer-gateway.ts` | pi-facing summarizer adapter: model, auth lookup, and `generate` are injected, so this module imports no pi code; a missing model/auth yields `null` plus one warning. |
 | `test/unit` | Pure modules, fakes, security checks. |
 | `test/contract` | Pinned `hc schema` contract and minimum-version guard. |
 | `test/integration` | Isolated real `hc` cores with fake or real children. |
@@ -75,6 +77,11 @@ them at the developer's default core.
    the current parent session. Restored runs are never adopted by mtime scanning.
 10. **No console noise.** Use `ctx.ui.notify`, custom messages, or files. Do not write to
     stdout from the extension.
+11. **Summarizer usage is separate.** `result.json.summaryUsage` and `details.summarizer`
+    never add to the child turn's `usage`, `run.json`, events, persistence entries, or
+    bench records. The summarizer is injected from `index.ts`; `src/runtime/**` and
+    `src/child/**` stay free of pi imports for this feature, and the settle path gains no
+    call (and no new `await`) when `resultSummarizer` is `off`.
 
 ## Architecture decisions
 
@@ -125,6 +132,7 @@ them at the developer's default core.
 | Settle-hint wake path | frame `src/child/pipe-protocol.ts` / `child.ts`, transport `src/child/pipe-transport.ts`, hub `src/runtime/settle-hints.ts`, gate `src/runtime/wake-gate.ts`, call sites (`src/runtime/async-monitor.ts`, `src/child/wait-child.ts`, `src/runtime/run-background.ts`, `src/runtime/run-ops.ts`), tests |
 | Tool schema/UX | `src/tools/**`, `src/ui/**`, tests |
 | Result budget / handoff contract | `src/runtime/result-format.ts`, `src/child/child-prompt.ts`, SPEC §12.6, tests |
+| Summarizer budget/prompt/gates | `src/runtime/summarizer.ts`, `src/runtime/summarizer-gateway.ts` (`SUMMARIZER_INSTRUCTIONS`), `src/runtime/result-format.ts` (summarized note), `index.ts` (gateway wiring), `test/unit/summarizer.test.ts`, `test/unit/summarizer-gateway.test.ts`, `test/unit/finalize-summarizer.test.ts`, SPEC §12.7 |
 | Benchmark arm/metric | `bench/arms.ts`, `bench/metrics.ts`, `bench/types.ts`, `test/unit/bench-metrics.test.ts` |
 | Benchmark task suite | `bench/tasks/<id>.json`, `bench/fixture/<id>/` |
 

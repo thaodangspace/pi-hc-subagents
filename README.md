@@ -16,7 +16,7 @@ service v1, run persistence/recovery/retention, provider and result-adapter exte
 points, the release hardening checks, and an external-parent mode for pi sessions that
 were not started by `hc`.
 
-Release candidate: `pi-hc-subagents` 0.3.0. See [`SPEC.md`](./SPEC.md) for the contract,
+Release candidate: `pi-hc-subagents` 0.4.0. See [`SPEC.md`](./SPEC.md) for the contract,
 [`PLAN.md`](./PLAN.md) for the research record, and [`AGENTS.md`](./AGENTS.md) for the
 module map and invariants.
 
@@ -225,6 +225,35 @@ Relevant keys: `defaultMode`, `notify`, `retentionDays`, `killOnTimeout`,
 `monitorAfterReturn`, `intertool.exposeService`, `intertool.emitEvents`,
 `intertool.includeTaskPreview`, `ui.status`, `hc.socketPath`, `hc.parentTerminal`, and the
 existing concurrency, polling, and timeout values.
+
+### Result summarizer
+
+| Key | Env | Default | Values |
+|---|---|---|---|
+| `resultSummarizer` | `PI_HC_SUBAGENTS_RESULT_SUMMARIZER` | `off` | `off` — deterministic digest only. `model` — one bounded parent-model summary per qualifying report. |
+
+**When it runs.** Only when the key is `model` **and** the turn completed, the child
+produced no `## Handoff`/`## Summary` section, and the deterministic content had to be
+condensed to fit its budget. A parent model with credentials is also required; without
+one the gateway degrades to `off` with a single warning. Content that already fits, handoff
+sections, and failed turns are never summarized, and a read never summarizes.
+
+**What it costs.** One extra provider call per qualifying result: at most 128 KiB in, 4 KiB
+out, no retries, one call per settled turn. Worst case it adds 10 s to the settle path
+before a synchronous result returns and before a background notification is queued. The
+call's tokens and cost are recorded in `result.json` `summaryUsage` and
+`details.summarizer`; they are **never** attributed to the child's `usage`.
+
+**Privacy.** Enabling it sends the child's final report (up to 128 KiB) to the parent's
+model provider a second time. The text is framed as data with extract-only instructions,
+and the summary is stored in the same `0600` `result.json` as the full text.
+
+**How to bypass.** `verbosity: "full"` on `hc_subagent` or `hc_subagent_control`
+`wait`/`result` reads the child's own text (up to 50 KiB) and ignores the summary; set
+`resultSummarizer: "off"` to disable the feature entirely. Re-reads are free: a persisted
+summary is reused by `wait`/`result`, by notifications, and by `/hc-subagents result`.
+Any timeout, auth, provider, or empty-summary failure falls back silently to the
+deterministic digest and records a stable code in `details.summarizerError`.
 
 ### Footer status
 
@@ -441,6 +470,13 @@ wrong thing. The first tier-2 run on this repository (`bench/RESULTS.md`, 180 tr
 for 1.35× billed tokens and 1.63× $ per resolved trial, at equal accuracy.
 See `bench/README.md` for metrics, caveats, and the Docker path.
 
+Next live bench, if `resultSummarizer` is being considered: run the same tasks with it
+`off` and `model` and compare the arrival rate of `details.contentCondensed &&
+!details.handoff` (the reports that would qualify) and the re-pull rate
+(`hc_subagent_control` `result`/`wait` with `verbosity: "full"` after a summarized
+result). Both are already visible in `details` and in the parent session, so the
+comparison needs no new instrumentation.
+
 ## Safety invariants
 
 - Child output is labelled as untrusted data and is never executed.
@@ -457,7 +493,7 @@ See `bench/README.md` for metrics, caveats, and the Docker path.
 
 ```bash
 npm pack --dry-run            # inspect the published file list
-npm pack                     # produce pi-hc-subagents-0.3.0.tgz
+npm pack                     # produce pi-hc-subagents-0.4.0.tgz
 npm test && npm run test:contract && npm run test:integration
 ```
 
