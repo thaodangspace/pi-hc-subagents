@@ -419,6 +419,14 @@ test("formatResultContent renders the handoff body and none of the preamble", ()
   assert.deepEqual(noteLines(content), [], "a fitting handoff needs no note");
 });
 
+test("a fitting handoff earns no note even when details.text was omitted as oversized", () => {
+  const text = `${narration(400)}\n${reportWithHandoff()}`;
+  assert.ok(bytes(text) > 50 * 1024, "the source exceeds the details cap");
+  const content = formatResultContent(syncInput(text, { textTruncated: true }));
+  assert.match(content, /HANDOFF-FINDING the helper is the only path now/);
+  assert.deepEqual(noteLines(content), [], "textTruncated alone is not a content note");
+});
+
 test("formatResultContent explains raw fallback when a non-handoff report is condensed", () => {
   const text = narration(100);
   assert.ok(bytes(text) > RESULT_CONTENT_MAX_BYTES);

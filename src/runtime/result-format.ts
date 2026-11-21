@@ -528,10 +528,13 @@ function sourceSize(text: string): string {
 
 /**
  * The single `note:` line explaining why the caller did not receive the whole
- * child text; `null` when a handoff was used and fit the budget.
+ * child text; `null` when the model-facing content was not condensed.
+ *
+ * `textTruncated` alone does not earn a note: it only means `details.text` was
+ * omitted as oversized, while the content the model sees was complete.
  */
 function resultContentNote(input: ResultContentInput, facing: ModelFacingResult): string | null {
-  if (!facing.condensed && input.textTruncated !== true) return null;
+  if (!facing.condensed) return null;
   if (!facing.handoff) {
     return "note: the child did not include a ## Handoff section; this is its raw final message, condensed to the caller budget";
   }
