@@ -6,9 +6,10 @@
  * delivers messages through `pi.sendUserMessage`. It never registers
  * `hc_subagent*` tools, never answers a dialog, and never uses PTY input.
  */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { createCoreClient } from "./src/core/core-client.ts";
+import { isCommandAllowed, parseAllowedCommands } from "./src/child/command-allowlist.ts";
 import { parseSessionFile } from "./src/child/session-read.ts";
 import { PipeRequestError, startChildPipeServer, type ChildPipeServer } from "./src/child/pipe-server.ts";
 import { NOTIFICATION_VERSION, validatePipeName } from "./src/child/pipe-protocol.ts";
@@ -17,6 +18,28 @@ export default function childPipeExtension(pi: ExtensionAPI): void {
   const pipeName = process.env.PI_HC_PIPE ?? "";
   if (process.env.PI_HC_SUBAGENT !== "1") return;
   if (validatePipeName(pipeName) !== null) return;
+
+  // A write-capable agent can declare a conservative bash/powershell prefix
+  // allowlist. An invalid marker fails closed: every shell call is blocked.
+  const commandPolicy = parseAllowedCommands(process.env.PI_HC_ALLOWED_COMMANDS);
+  pi.on("tool_call", (event) => {
+    if (!isToolCallEventType("bash", event) && !isToolCallEventType("powershell", event)) return;
+    if (!commandPolicy.valid) {
+      return {
+        block: true,
+        reason: "this child has an invalid command allowlist; refusing shell commands",
+      };
+    }
+    if (commandPolicy.allowed.length === 0) return;
+    const command = typeof event.input.command === "string" ? event.input.command : "";
+    if (isCommandAllowed(command, commandPolicy.allowed)) return;
+    const preview = commandPolicy.allowed.slice(0, 6).join(", ");
+    const more = commandPolicy.allowed.length > 6 ? ` (+${commandPolicy.allowed.length - 6} more)` : "";
+    return {
+      block: true,
+      reason: `command is not in this agent's allowedCommands allowlist (allowed prefixes: ${preview}${more})`,
+    };
+  });
 
   const core = createCoreClient(process.env);
   let ctx: ExtensionContext | null = null;

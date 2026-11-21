@@ -34,12 +34,13 @@ them at the developer's default core.
 | `src/core/**` | hc JSON-RPC client, decoders, stable error codes, JSONL framing. No pi imports. |
 | `src/config/**` | Config schema/defaults, precedence, env overrides, warnings, agent-dir resolution. |
 | `src/agents/**` | Agent frontmatter/discovery, precedence, access inference, project-agent policy. |
-| `src/child/**` | Deterministic spawn plan, run paths, atomic files, session parsing, pipe protocol/transport, pi result adapter. |
-| `src/runtime/**` | Registry, scheduler, state machine, monitors, wake gate, settle-hint hub, persistence, reconciliation, retention, result publication, provider-aware run operations. |
+| `src/child/**` | Deterministic spawn plan, run paths, atomic files, command allowlist, session parsing, pipe protocol/transport, pi result adapter. |
+| `src/runtime/**` | Registry, scheduler, state machine, monitors, wake gate, settle-hint hub, agent catalog, persistence, reconciliation, retention, result publication, provider-aware run operations. |
 | `src/intertool/**` | Service v1, events, provider/result-adapter interfaces and registries, built-in local provider. |
 | `src/tools/**` | `hc_subagent` (single/batch/chain) and `hc_subagent_control` tools. No business logic beyond tool adapters. |
 | `src/ui/**` | Widget/footer, renderers, `/hc-subagents` command. |
 | `src/runtime/settle-hints.ts` | Per-child settled-hint hub: one long-lived pipe subscription per child, bounded listener fan-out, de-dupe/staleness, and counters (no task/result text). |
+| `src/runtime/agent-catalog.ts` | Bounded agent name/description catalog injected through `before_agent_start`; lazy refresh, omitted in child mode. |
 | `src/runtime/wake-gate.ts` | Shared timer/wake/abort wait primitive used by monitors and synchronous waits; a hint shortens a wait but never decides a state. |
 | `test/unit` | Pure modules, fakes, security checks. |
 | `test/contract` | Pinned `hc schema` contract and minimum-version guard. |
@@ -57,7 +58,9 @@ them at the developer's default core.
    into a blocked child, and never auto-approves project agents or permission prompts.
 4. **Trust and concurrency are mandatory.** Providers must use `ProviderHost` for agent
    resolution, project trust/confirmation, cwd validation, and scheduler admission.
-   Registration is trusted code, but it cannot bypass these checks.
+   Registration is trusted code, but it cannot bypass these checks. A live child owns
+   its scheduler slot until it settles or exits, even when a sync wait returned
+   `timeout` or `blocked`.
 5. **Fail closed.** With no core endpoint (no `HC_TERMINAL_SOCKET` and no configured
    `hc.socketPath`), with an old core, or without a resolvable pi, no tools are
    registered. A provider/adapter throw is contained and marks the run failed.

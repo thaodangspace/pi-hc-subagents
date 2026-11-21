@@ -25,6 +25,7 @@ import {
   removeService,
 } from "./src/intertool/service.ts";
 import { HcSubagentsWidget } from "./src/ui/widget.ts";
+import { registerAgentCatalogPrompt, refreshAgentCatalog } from "./src/runtime/agent-catalog.ts";
 import { registerHcSubagentsCommand } from "./src/ui/command.ts";
 import { registerHcSubagentsRenderers } from "./src/ui/renderers.ts";
 import { PiSessionResultAdapter } from "./src/child/pi-result-adapter.ts";
@@ -43,6 +44,7 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
   let compacting = false;
 
   registerHcSubagentsRenderers(pi);
+  registerAgentCatalogPrompt(pi, () => toolSession);
 
   registerHcSubagentsCommand(pi, {
     getSession: () => toolSession,
@@ -186,6 +188,8 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
     session.onRecordChange = () => refreshWidget();
 
     toolSession = session;
+    // Prewarm the agent catalog so the first turn does not pay discovery cost.
+    await refreshAgentCatalog(session).catch(() => null);
     if (!toolsRegistered) {
       registerSpawnTool(pi, () => toolSession, { exposure: runtime.config.exposure });
       registerControlTool(pi, () => toolSession, { exposure: runtime.config.exposure });

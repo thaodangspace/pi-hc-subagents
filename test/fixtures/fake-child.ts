@@ -27,7 +27,8 @@ type Mode =
   | "pipe"
   | "pipe-streaming"
   | "pipe-push"
-  | "pipe-flat-turn";
+  | "pipe-flat-turn"
+  | "slow-settle";
 
 function parseArgs(argv: string[]): { sessionId: string; sessionDir: string; name: string; taskFile: string | null } {
   let sessionId = "";
@@ -69,6 +70,7 @@ function mode(): Mode {
     case "pipe-streaming":
     case "pipe-push":
     case "pipe-flat-turn":
+    case "slow-settle":
       return value;
     default:
       return "success";
@@ -378,6 +380,48 @@ switch (selectedMode) {
     setTimeout(() => emitStatus("done", args.name || "fake child"), 350);
     finishAndStayAlive();
     break;
+  case "slow-settle": {
+    // Settles after a configurable delay, or quickly when the task says QUICK.
+    // Used by timeout/monitor tests to keep a write child alive past a short wait.
+    const task = actualTask(taskText);
+    const quick = /\bQUICK\b/i.test(task);
+    const configured = Number(process.env.PI_HC_TEST_CHILD_SETTLE_MS ?? "2000");
+    const delay = quick ? 100 : Number.isFinite(configured) ? Math.max(250, configured) : 2000;
+    emitStatus("working", args.name || "fake child");
+    setTimeout(() => {
+      writeSession({
+        sessionDir: args.sessionDir,
+        sessionId: args.sessionId,
+        taskText: task,
+        stopReason: "stop",
+        text: quick ? "Fake quick result." : "Fake slow result.",
+      });
+      emitStatus("done", args.name || "fake child");
+    }, delay);
+    finishAndStayAlive();
+    break;
+  }
+  case "slow-settle": {
+    // Settles after a configurable delay, or quickly when the task says QUICK.
+    // Used by timeout/monitor tests to keep a write child alive past a short wait.
+    const task = actualTask(taskText);
+    const quick = /\bQUICK\b/i.test(task);
+    const configured = Number(process.env.PI_HC_TEST_CHILD_SETTLE_MS ?? "2000");
+    const delay = quick ? 100 : Number.isFinite(configured) ? Math.max(250, configured) : 2000;
+    emitStatus("working", args.name || "fake child");
+    setTimeout(() => {
+      writeSession({
+        sessionDir: args.sessionDir,
+        sessionId: args.sessionId,
+        taskText: task,
+        stopReason: "stop",
+        text: quick ? "Fake quick result." : "Fake slow result.",
+      });
+      emitStatus("done", args.name || "fake child");
+    }, delay);
+    finishAndStayAlive();
+    break;
+  }
   case "exit-early":
     emitStatus("working", args.name || "fake child");
     setTimeout(() => process.exit(3), 150);

@@ -73,6 +73,54 @@ test("access inference follows the approved rules", async () => {
   assert.deepEqual(effectiveAgentTools(resolveAgent(result, "inferred-read")), ["read", "grep"]);
 });
 
+test("disallowedTools narrows the effective tool set and allowedCommands is parsed", async () => {
+  const result = await discover();
+  const guarded = resolveAgent(result, "guarded");
+  assert.deepEqual(guarded.disallowedTools, ["edit", "write"]);
+  assert.deepEqual(guarded.allowedCommands, ["git status", "npm test"]);
+  assert.equal(guarded.access, "write");
+  assert.deepEqual(effectiveAgentTools(guarded), ["read", "bash", "grep"]);
+  assert.doesNotThrow(() => validateAgentForSpawn(guarded, { trusted: true }));
+
+  const listing = formatAgentList(result.agents, 40).text;
+  assert.match(listing, /- guarded \(user\): Write agent with a deny list/);
+  assert.match(listing, /- scout \(user, read-only\):/);
+});
+
+test("validateAgentForSpawn uses the tool set after disallowedTools", () => {
+  const base = {
+    name: "guarded-reader",
+    description: "guarded",
+    systemPrompt: "",
+    tools: ["read", "bash"],
+    access: "read-only" as const,
+    source: "user" as const,
+    filePath: "/tmp/guarded-reader.md",
+  };
+  assert.doesNotThrow(() =>
+    validateAgentForSpawn({ ...base, disallowedTools: ["bash"] }, { trusted: true }),
+  );
+  assert.throws(
+    () => validateAgentForSpawn({ ...base, disallowedTools: ["read", "grep", "find", "ls"] }, { trusted: true }),
+    (error: unknown) => error instanceof HcSubagentError && error.code === "validation",
+  );
+
+  // A write agent with an explicit allowlist cannot fall back to pi defaults.
+  assert.throws(
+    () =>
+      validateAgentForSpawn(
+        {
+          ...base,
+          access: "write",
+          tools: ["edit"],
+          disallowedTools: ["edit"],
+        },
+        { trusted: true },
+      ),
+    (error: unknown) => error instanceof HcSubagentError && /no tools left/.test(error.message),
+  );
+});
+
 test("malformed files, missing descriptions, bad names, and invalid thinking do not break discovery", async () => {
   const result = await discover();
   const names = result.agents.map((agent) => agent.name);

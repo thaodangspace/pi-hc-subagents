@@ -33,6 +33,7 @@ const CLEARED_CHILD_ENV = [
   "PI_SESSION_ID",
   "PI_SESSION_FILE",
   "PI_HC_PIPE",
+  "PI_HC_ALLOWED_COMMANDS",
   "PI_HC_SUBAGENTS_SOCKET",
   "PI_HC_SUBAGENTS_PARENT_TERMINAL",
 ] as const;
@@ -217,9 +218,14 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
   const parentTerminalId = input.parentTerminalId?.trim() || null;
 
   const excludeTools = [
-    ...new Set([...HC_TOOL_NAMES, ...(input.excludeTools ?? []), ...(input.agent.tools?.filter((tool) =>
-      HC_TOOL_NAMES.includes(tool as (typeof HC_TOOL_NAMES)[number]),
-    ) ?? [])]),
+    ...new Set([
+      ...HC_TOOL_NAMES,
+      ...(input.excludeTools ?? []),
+      ...(input.agent.disallowedTools ?? []),
+      ...(input.agent.tools?.filter((tool) =>
+        HC_TOOL_NAMES.includes(tool as (typeof HC_TOOL_NAMES)[number]),
+      ) ?? []),
+    ]),
   ];
   const tools = effectiveAgentTools(input.agent);
   const cwdInsideParent = isCwdInside(input.trust.parentCwd, cwd);
@@ -270,6 +276,9 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
       PI_HC_CHILD_ID: input.paths.childId,
       PI_HC_PARENT_SESSION: input.parentSessionId,
       PI_HC_PIPE: pipeName,
+      ...(input.agent.allowedCommands && input.agent.allowedCommands.length > 0
+        ? { PI_HC_ALLOWED_COMMANDS: JSON.stringify(input.agent.allowedCommands) }
+        : {}),
     }),
     labels,
     parent: parentTerminalId,
@@ -290,6 +299,8 @@ export function summarizeSpawnPlan(plan: SpawnPlan): Record<string, unknown> {
     terminalName: plan.paths.terminalName,
     agent: plan.agent.name,
     agentSource: plan.agent.source,
+    disallowedTools: plan.agent.disallowedTools ?? [],
+    allowedCommands: plan.agent.allowedCommands ?? [],
     model: plan.model,
     thinking: plan.thinking,
     cwd: plan.cwd,

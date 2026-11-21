@@ -10,6 +10,7 @@ import type { ExtensionRuntime } from "../runtime/runtime.ts";
 import type { IntertoolServiceV1 } from "../intertool/service.ts";
 import type { SubagentRecord } from "../runtime/types.ts";
 import type { AgentSource } from "../agents/agents.ts";
+import type { AgentCatalog } from "../runtime/agent-catalog.ts";
 import type { ProviderRegistry, ResultAdapterRegistry } from "../intertool/adapters.ts";
 import type { SettleHintHub } from "../runtime/settle-hints.ts";
 
@@ -37,4 +38,8 @@ export interface ToolSession {
   isIdle?: () => boolean;
   /** Extra agent sources registered through the intertool service. */
   agentSources?: AgentSource[];
+  /** Cached agent catalog injected into the parent prompt. */
+  agentCatalog?: AgentCatalog;
+  /** Unix ms when `agentCatalog` was last refreshed. */
+  agentCatalogAt?: number;
 }

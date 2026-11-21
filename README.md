@@ -106,8 +106,10 @@ must be absolute. A relative path warns and is ignored.
   - `confirmProjectAgents` — project agents prompt by default; pass `false` only when the
     user already approved them.
 - `hc_subagent_control` — `list`, `wait`, `output`, `result`, `attach`, `interrupt`, `kill`,
-  `send`. `send` requires the child-side private pipe and appends a new turn; `wait`
-  defaults to true. A blocked child is rejected, never force-answered.
+  `send`. `send` requires a **live** child started with the current package and appends a
+  new turn; `wait` defaults to true. A blocked child is rejected, never force-answered.
+  A child cannot be resumed or reattached after `/reload`, a session switch, or a parent
+  restart; start a new child instead.
 
 `tasks`/`chain` summaries stay compact; full per-task results are in
 `details.results[]`. Every child still gets its own terminal, session, and run record.
@@ -123,7 +125,9 @@ Unix socket under `/tmp` (`PI_HC_PIPE`, mode `0600`). `hc_subagent_control send`
 intertool `send` method) delivers follow-ups through that socket using
 `pi.sendUserMessage` with `deliverAs: "steer"` while streaming or a new turn while idle.
 The PTY remains a human channel: the extension never types into it, never sends `force`,
-and never answers a permission dialog. The child labels its terminal
+and never answers a permission dialog. The pipe is process-local state, so it does not
+survive `/reload` or a parent restart; there is no resume path, only a new child. The
+child labels its terminal
 `pi-hc-session=<session file>` and does not register `hc_subagent*` tools.
 
 ## Async delivery
@@ -196,9 +200,10 @@ projects only). Environment overrides use the `PI_HC_SUBAGENTS_*` prefix.
 
 Run `/hc-subagents config` to print the effective configuration and agent directories.
 
-Relevant M2 keys: `defaultMode`, `notify`, `retentionDays`, `intertool.exposeService`,
-`intertool.emitEvents`, `intertool.includeTaskPreview`, `hc.socketPath`,
-`hc.parentTerminal`, and the existing concurrency, polling, and timeout values.
+Relevant keys: `defaultMode`, `notify`, `retentionDays`, `killOnTimeout`,
+`monitorAfterReturn`, `intertool.exposeService`, `intertool.emitEvents`,
+`intertool.includeTaskPreview`, `hc.socketPath`, `hc.parentTerminal`, and the existing
+concurrency, polling, and timeout values.
 
 ### Latency
 
@@ -213,6 +218,13 @@ a disconnected channel degrades to polling rather than implying the child died.
 (`mode=push|poll hints=… wakes=… falseWakes=… stale=… dup=… reconnects=… degraded=…`), so you can tell
 from the parent whether a run is being settled by push or by poll.
 
+When a synchronous wait returns `timeout` or `blocked`, the child is still live. The
+extension keeps the scheduler slot owned by that child and starts a background monitor,
+so a write-capable child cannot overlap a later write in the same cwd just because the
+tool call returned. `monitorAfterReturn: true` also delivers the eventual result as a
+custom message; with `false`, the result is still published to `result.json` but the
+parent must collect it with `hc_subagent_control wait`/`result`.
+
 ## Agents
 
 Built-in agents: `reviewer` and `scout` (read-only), `worker` (write-capable). User agents
@@ -223,6 +235,20 @@ live in `~/.pi/agent/agents/*.md`; project agents live in `.pi/agents/*.md` and 
    `allowTrustedProjectAgents: true` from a caller that already has approval).
 
 Without UI, an unapproved project agent is rejected explicitly rather than prompted.
+
+The parent prompt carries a bounded `<hc-subagents-agents>` catalog (name, source,
+read-only marker, and description) so the model can pick an agent instead of guessing.
+It is refreshed lazily and respects the configured `agentScope`.
+
+Agent frontmatter also supports:
+
+- `disallowedTools` — names removed from the effective tool set and passed to
+  `--exclude-tools`; a read-only agent that loses all its tools is rejected.
+- `allowedCommands` — a conservative bash/powershell prefix allowlist for write agents.
+  The child blocks any command outside the list, and any command containing shell
+  chaining, redirection, substitution, or control characters. This is a guardrail, not a
+  sandbox: an allowed command can still run project scripts, so pair it with
+  `disallowedTools` when the agent should not edit files.
 
 A child inherits the parent's model and thinking level unless the agent's
 frontmatter pins them (`model:`, `thinking:`). Before that, an agent without a
@@ -416,7 +442,8 @@ CI runs typecheck, unit tests, and the pinned hc contract test on macOS and Linu
 - Outside hc, children depend on the configured socket: the parent can outlive the core
   but not the anchor terminal when `hc.parentTerminal` is set. Parentless children are
   not tied to the parent by hc; they only get killed on a clean `session_shutdown`.
-- A follow-up needs a child started with the current package's `child.ts`; restored
-  pre-M3/older children report `unavailable` instead of falling back to PTY input.
-- `monitorAfterReturn` is accepted in config but not used until a timeout keeps a
-  monitor alive.
+- A follow-up needs a live child started with the current package's `child.ts`; restored
+  older children report `unavailable` instead of falling back to PTY input. There is no
+  resume or reattach after `/reload` or a parent restart — start a new child.
+- `monitorAfterReturn` controls async notification for a timed-out/blocked foreground
+  child; the slot-keeping monitor runs regardless so write serialization is preserved.

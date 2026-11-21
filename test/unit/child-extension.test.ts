@@ -146,3 +146,72 @@ test("child.ts starts the pipe, labels the session, delivers safely, and never r
     delete process.env.HC_TERMINAL_SOCKET;
   }
 });
+
+test("a child rejects shell calls outside its allowedCommands prefixes", () => {
+  const pipeName = pipeNameFor("/tmp/pi-hc-child-tests", "guarded-child");
+  process.env.PI_HC_SUBAGENT = "1";
+  process.env.PI_HC_PIPE = pipeName;
+  process.env.PI_HC_ALLOWED_COMMANDS = JSON.stringify(["git status", "npm test"]);
+  const handlers = new Map<string, (...args: any[]) => any>();
+  const pi = {
+    on(name: string, handler: (...args: any[]) => any) {
+      handlers.set(name, handler);
+      return () => {};
+    },
+  } as any;
+
+  try {
+    childPipeExtension(pi);
+    const guard = handlers.get("tool_call");
+    assert.ok(guard);
+
+    const call = (toolName: string, input: Record<string, unknown>) =>
+      guard({ type: "tool_call", toolCallId: "call-1", toolName, input });
+
+    assert.equal(call("read", { path: "src/index.ts" }), undefined);
+    assert.equal(call("bash", { command: "git status --short" }), undefined);
+    assert.equal(call("bash", { command: "npm test -- --runInBand" }), undefined);
+
+    const chained = call("bash", { command: "git status; rm -rf /" });
+    assert.equal(chained?.block, true);
+    assert.match(chained?.reason ?? "", /allowedCommands/);
+
+    const outside = call("bash", { command: "git stash" });
+    assert.equal(outside?.block, true);
+  } finally {
+    delete process.env.PI_HC_SUBAGENT;
+    delete process.env.PI_HC_PIPE;
+    delete process.env.PI_HC_ALLOWED_COMMANDS;
+  }
+});
+
+test("an invalid command allowlist fails closed", () => {
+  const pipeName = pipeNameFor("/tmp/pi-hc-child-tests", "invalid-policy-child");
+  process.env.PI_HC_SUBAGENT = "1";
+  process.env.PI_HC_PIPE = pipeName;
+  process.env.PI_HC_ALLOWED_COMMANDS = "not-json";
+  const handlers = new Map<string, (...args: any[]) => any>();
+  const pi = {
+    on(name: string, handler: (...args: any[]) => any) {
+      handlers.set(name, handler);
+      return () => {};
+    },
+  } as any;
+
+  try {
+    childPipeExtension(pi);
+    const guard = handlers.get("tool_call");
+    assert.ok(guard);
+    const blocked = guard({ type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "git status" } });
+    assert.equal(blocked?.block, true);
+    assert.match(blocked?.reason ?? "", /invalid command allowlist/);
+    assert.equal(
+      guard({ type: "tool_call", toolCallId: "call-2", toolName: "read", input: { path: "x" } }),
+      undefined,
+    );
+  } finally {
+    delete process.env.PI_HC_SUBAGENT;
+    delete process.env.PI_HC_PIPE;
+    delete process.env.PI_HC_ALLOWED_COMMANDS;
+  }
+});

@@ -636,6 +636,10 @@ tools: read, grep, find, ls
 model: anthropic/claude-sonnet-4-5
 thinking: medium
 access: read-only
+disallowedTools: edit, write
+allowedCommands:
+  - git status
+  - npm test
 skills: []
 extensions: []
 ---
@@ -650,6 +654,8 @@ System prompt body.
 | `model` | string | `provider/model` or pi pattern; optional |
 | `thinking` | enum | `off..max`; optional |
 | `access` | `"read-only"` or `"write"` | Optional; inferred if absent |
+| `disallowedTools` | string or string[] | Optional; removed from the effective tool set and passed to `--exclude-tools` |
+| `allowedCommands` | string[] | Optional for write agents; conservative shell prefix allowlist enforced by the child |
 | `skills` | string[] | Optional; passed as repeated `--skill` |
 | `extensions` | string[] | Optional; passed as repeated `-e`; project extensions require trust |
 | `cwd` | string | Optional default working directory (relative to parent cwd) |
@@ -660,7 +666,8 @@ Unknown fields MUST be ignored. A malformed file MUST NOT break discovery of oth
 
 If `access` is absent:
 
-- If `tools` is present and contains any of `edit`, `write`, `bash`, `powershell` → `write`.
+- If `tools` is present and contains any of `edit`, `write`, `bash`, `powershell` after
+  removing `disallowedTools` → `write`.
 - If `tools` is present and contains none of those → `read-only`.
 - If `tools` is absent → `write` (pi's default tool set is write-capable).
 
@@ -1071,7 +1078,11 @@ Poll `terminal.get` every `pollIntervalMs` (default 750 ms; min 250 ms):
 - `status.kind` (`permission`, `question`, `auth`) and `status.msg` MUST be surfaced.
 - Read screen tail (`lines: 40`) and strip control characters; include a bounded preview.
 - Do NOT send keys, `force`, or an answer. The parent model MUST ask the human or instruct them to attach.
-- For sync spawn, return blocked immediately; keep the child alive. For async/background, emit one blocked notification per blocked episode; continue monitoring. A subsequent `working`/`done` clears the episode.
+- For sync spawn, return blocked immediately; keep the child alive. The extension starts
+  a keep-alive monitor that retains the scheduler slot until the child settles, without
+  re-notifying the episode the sync result already reported. For async/background, emit
+  one blocked notification per blocked episode; continue monitoring. A subsequent
+  `working`/`done` clears the episode.
 - A blocked child MUST NOT be killed automatically by timeout unless `killOnTimeout` is explicitly enabled.
 
 ### 13.6 Abort and cancellation
@@ -1099,7 +1110,12 @@ Poll `terminal.get` every `pollIntervalMs` (default 750 ms; min 250 ms):
   (interrupt, then kill) after recording the timeout. When false, keep the child and return
   an attach hint.
 - `monitorAfterReturn` (default false): when true, a sync spawn that times out leaves an
-  async monitor running and may later deliver a result; when false, the caller must wait again.
+  async monitor running and may later deliver the result as a notification; when false,
+  the result is still published to `result.json` but the caller must collect it with
+  `hc_subagent_control wait`/`result`.
+- A timed-out or blocked sync spawn MUST keep its scheduler slot until the child settles
+  or exits. A write-capable child must never be left mutating a cwd while a later write
+  child is admitted just because the original tool call returned.
 - Never convert a timeout into a kill silently.
 
 ---

@@ -32,6 +32,7 @@ test("the extension module loads with a mock pi API and registers no tools up fr
   const { pi, registrations } = createMockPi();
   assert.doesNotThrow(() => hcSubagentsExtension(pi));
   assert.deepEqual(registrations, [
+    { kind: "handler", name: "before_agent_start" },
     { kind: "command", name: "hc-subagents" },
     { kind: "handler", name: "session_start" },
     { kind: "handler", name: "agent_settled" },
