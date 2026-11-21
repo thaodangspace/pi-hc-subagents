@@ -4,7 +4,13 @@ import path from "node:path";
 import test from "node:test";
 
 import { formatConfigDiagnostics, loadConfig } from "../../src/config/config.ts";
-import { DEFAULT_CONFIG, envOverrides, validateConfig } from "../../src/config/schema.ts";
+import {
+  DEFAULT_CONFIG,
+  applyConfigLayer,
+  cloneDefaultConfig,
+  envOverrides,
+  validateConfig,
+} from "../../src/config/schema.ts";
 
 async function scratch(): Promise<string> {
   return mkdtemp(path.join("/tmp", "hc-cfg-"));
@@ -35,6 +41,7 @@ test("defaults match the approved configuration", () => {
     emitEvents: true,
     includeTaskPreview: false,
   });
+  assert.deepEqual(DEFAULT_CONFIG.ui, { status: "detail" });
   assert.deepEqual(DEFAULT_CONFIG.hc, { socketPath: null, parentTerminal: null });
 });
 
@@ -152,6 +159,28 @@ test("environment overrides accept valid values and warn about invalid ones", ()
   assert.equal(invalid.value.pollIntervalMs, undefined);
   assert.equal(invalid.value.agentScope, undefined);
   assert.equal(invalid.warnings.length, 3);
+});
+
+test("ui.status accepts the three modes and warns otherwise", () => {
+  for (const status of ["off", "count", "detail"] as const) {
+    const result = validateConfig({ ui: { status } }, "project");
+    assert.deepEqual(result.value, { ui: { status } });
+    assert.deepEqual(result.warnings, []);
+  }
+
+  const invalid = validateConfig({ ui: { status: "loud" } }, "global");
+  assert.deepEqual(invalid.value, { ui: {} });
+  assert.deepEqual(invalid.warnings.map((warning) => warning.field), ["ui.status"]);
+
+  const notAnObject = validateConfig({ ui: "detail" }, "global");
+  assert.deepEqual(notAnObject.value, {});
+  assert.deepEqual(notAnObject.warnings.map((warning) => warning.field), ["ui"]);
+
+  const merged = applyConfigLayer(cloneDefaultConfig(), { ui: { status: "count" } });
+  assert.deepEqual(merged.ui, { status: "count" });
+  const untouched = applyConfigLayer(cloneDefaultConfig(), {});
+  assert.deepEqual(untouched.ui, { status: "detail" });
+  assert.notEqual(untouched.ui, cloneDefaultConfig().ui);
 });
 
 test("validateConfig ignores unknown fields and deep-merges intertool", () => {

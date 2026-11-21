@@ -11,6 +11,19 @@ export type NotifyMode = "async" | "none";
 export type CleanupPolicy = "keep" | "remove";
 export type Exposure = "direct" | "model-only";
 
+/**
+ * Footer status verbosity.
+ *
+ * `off` never writes a status, `count` keeps the legacy `N active` string, and
+ * `detail` names the single running child and counts blocked children.
+ */
+export type UiStatusMode = "off" | "count" | "detail";
+
+export interface UiConfig {
+  /** Footer status verbosity; never carries task or result text. */
+  status: UiStatusMode;
+}
+
 export interface IntertoolConfig {
   exposeService: boolean;
   emitEvents: boolean;
@@ -52,6 +65,7 @@ export interface HcSubagentsConfig {
   excludeTools: string[];
   exposure: Exposure;
   intertool: IntertoolConfig;
+  ui: UiConfig;
   hc: HcConnectionConfig;
 }
 
@@ -78,6 +92,9 @@ export const DEFAULT_CONFIG: Readonly<HcSubagentsConfig> = Object.freeze({
     emitEvents: true,
     includeTaskPreview: false,
   },
+  ui: {
+    status: "detail" as UiStatusMode,
+  },
   hc: {
     socketPath: null,
     parentTerminal: null,
@@ -93,8 +110,9 @@ export interface ConfigWarning {
   value?: unknown;
 }
 
-export type ConfigLayer = Omit<Partial<HcSubagentsConfig>, "intertool" | "hc"> & {
+export type ConfigLayer = Omit<Partial<HcSubagentsConfig>, "intertool" | "hc" | "ui"> & {
   intertool?: Partial<IntertoolConfig>;
+  ui?: Partial<UiConfig>;
   hc?: Partial<HcConnectionConfig>;
 };
 
@@ -108,12 +126,14 @@ const DEFAULT_MODES: readonly DefaultMode[] = ["sync", "async"];
 const NOTIFY_MODES: readonly NotifyMode[] = ["async", "none"];
 const CLEANUP_POLICIES: readonly CleanupPolicy[] = ["keep", "remove"];
 const EXPOSURES: readonly Exposure[] = ["direct", "model-only"];
+const UI_STATUS_MODES: readonly UiStatusMode[] = ["off", "count", "detail"];
 
 export function cloneDefaultConfig(): HcSubagentsConfig {
   return {
     ...DEFAULT_CONFIG,
     excludeTools: [...DEFAULT_CONFIG.excludeTools],
     intertool: { ...DEFAULT_CONFIG.intertool },
+    ui: { ...DEFAULT_CONFIG.ui },
     hc: { ...DEFAULT_CONFIG.hc },
   };
 }
@@ -249,6 +269,34 @@ function validateHc(
   return result;
 }
 
+function validateUi(
+  raw: Record<string, unknown>,
+  source: ConfigSource,
+  warnings: ConfigWarning[],
+): Partial<UiConfig> | undefined {
+  if (!("ui" in raw)) return undefined;
+  const value = raw.ui;
+  if (!isRecord(value)) {
+    warnings.push({ source, field: "ui", message: "expected an object", value });
+    return undefined;
+  }
+  const result: Partial<UiConfig> = {};
+  if ("status" in value) {
+    const status = value.status;
+    if (typeof status === "string" && (UI_STATUS_MODES as readonly string[]).includes(status)) {
+      result.status = status as UiStatusMode;
+    } else {
+      warnings.push({
+        source,
+        field: "ui.status",
+        message: `expected one of ${UI_STATUS_MODES.join(", ")}`,
+        value: status,
+      });
+    }
+  }
+  return result;
+}
+
 function validateIntertool(
   raw: Record<string, unknown>,
   source: ConfigSource,
@@ -316,6 +364,9 @@ export function validateConfig(raw: unknown, source: ConfigSource): ValidationRe
   const intertool = validateIntertool(raw, source, warnings);
   if (intertool !== undefined) value.intertool = intertool;
 
+  const ui = validateUi(raw, source, warnings);
+  if (ui !== undefined) value.ui = ui;
+
   const hc = validateHc(raw, source, warnings);
   if (hc !== undefined) value.hc = hc;
 
@@ -329,6 +380,7 @@ export function applyConfigLayer(base: HcSubagentsConfig, layer: ConfigLayer): H
     ...layer,
     excludeTools: layer.excludeTools ? [...layer.excludeTools] : [...base.excludeTools],
     intertool: layer.intertool ? { ...base.intertool, ...layer.intertool } : { ...base.intertool },
+    ui: layer.ui ? { ...base.ui, ...layer.ui } : { ...base.ui },
     hc: layer.hc ? { ...base.hc, ...layer.hc } : { ...base.hc },
   };
 }

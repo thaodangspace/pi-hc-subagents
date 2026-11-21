@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   HcSubagentsWidget,
   STATUS_KEY,
+  STATUS_MAX_CHARS,
   WIDGET_KEY,
+  formatStatus,
   formatWidgetLines,
   type WidgetRecordLike,
 } from "../../src/ui/widget.ts";
@@ -74,7 +76,7 @@ test("widget sets and clears footer status and widget lines", () => {
   };
   const widget = new HcSubagentsWidget(ui, { now: () => NOW, debounceMs: 0 });
   widget.refresh([record()]);
-  assert.equal(statuses.at(-1), "1 active");
+  assert.equal(statuses.at(-1), "↳ reviewer 2m");
   assert.match(widgets.at(-1)?.[0] ?? "", /reviewer/);
 
   widget.refresh([record(), record({ agent: "scout" })]);
@@ -87,6 +89,65 @@ test("widget sets and clears footer status and widget lines", () => {
   widget.clear();
   assert.equal(statuses.at(-1), undefined);
   assert.equal(widgets.at(-1), undefined);
+  widget.dispose();
+});
+
+test("count mode keeps the legacy active count", () => {
+  assert.equal(formatStatus([], { mode: "count", now: NOW }), undefined);
+  assert.equal(formatStatus([record()], { mode: "count", now: NOW }), "1 active");
+  assert.equal(
+    formatStatus([record(), record({ agent: "scout", state: "blocked" })], { mode: "count", now: NOW }),
+    "2 active",
+  );
+});
+
+test("detail mode names the only child and counts blocked ones", () => {
+  assert.equal(formatStatus([], { mode: "detail", now: NOW }), undefined);
+  assert.equal(formatStatus([record()], { mode: "detail", now: NOW }), "↳ reviewer 2m");
+  assert.equal(
+    formatStatus([record({ state: "blocked", createdAt: "2026-11-20T12:09:00.000Z" })], { mode: "detail", now: NOW }),
+    "↳ reviewer 1m blocked",
+  );
+  assert.equal(
+    formatStatus([record(), record({ agent: "scout", state: "blocked" })], { mode: "detail", now: NOW }),
+    "2 active · 1 blocked",
+  );
+  assert.equal(
+    formatStatus([record(), record({ agent: "scout" }), record({ agent: "worker" })], { mode: "detail", now: NOW }),
+    "3 active",
+  );
+});
+
+test("detail mode ignores finished children and never leaks task text", () => {
+  const finished = record({
+    state: "completed",
+    task: "SECRET TASK",
+    resultText: "SECRET RESULT",
+  } as unknown as WidgetRecordLike);
+  assert.equal(formatStatus([finished], { mode: "detail", now: NOW }), undefined);
+  const status = formatStatus([record({ agent: "reviewer-with-a-name-that-is-deliberately-far-too-long-for-a-footer-line" })], {
+    mode: "detail",
+    now: NOW,
+  });
+  assert.ok((status ?? "").length <= STATUS_MAX_CHARS);
+  assert.match(status ?? "", /…$/);
+});
+
+test("off mode never writes a status", () => {
+  assert.equal(formatStatus([record()], { mode: "off", now: NOW }), undefined);
+
+  const statuses: Array<string | undefined> = [];
+  const widget = new HcSubagentsWidget(
+    {
+      setStatus(_key: string, text: string | undefined) {
+        statuses.push(text);
+      },
+      setWidget() {},
+    },
+    { now: () => NOW, debounceMs: 0, statusMode: "off" },
+  );
+  widget.refresh([record()]);
+  assert.equal(statuses.at(-1), undefined);
   widget.dispose();
 });
 

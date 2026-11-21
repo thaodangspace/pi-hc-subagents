@@ -1512,7 +1512,13 @@ bounded screen tail.
 
 When `ctx.hasUI`:
 
-- Footer: `ctx.ui.setStatus("hc-subagents", "N active")` while any active; clear when zero.
+- Footer: `ctx.ui.setStatus("hc-subagents", …)` while any active; clear when zero. The text
+  follows `ui.status`:
+  - `detail` (default): `↳ reviewer 2m` for the only active child, `↳ reviewer 1m blocked`
+    when it is blocked, `3 active · 1 blocked` for several.
+  - `count`: the legacy `N active`.
+  - `off`: never set a status.
+  The footer string is bounded (64 chars) and carries no task or result text.
 - Widget (above editor), one line per active child, max 6 lines; overflow `+N more`:
   ```text
   ↳ reviewer   working   2m  gpt-6.1-sol  /repo
@@ -1599,6 +1605,9 @@ export interface HcSubagentsConfig {
     emitEvents: boolean;
     includeTaskPreview: boolean;
   };
+  ui: {
+    status: "off" | "count" | "detail"; // footer status verbosity
+  };
   hc: {
     socketPath: string | null;      // external parent only; absolute
     parentTerminal: string | null;  // anchor terminal; null = parentless children
@@ -1632,6 +1641,9 @@ Default file contents:
     "emitEvents": true,
     "includeTaskPreview": false
   },
+  "ui": {
+    "status": "detail"                // "off" | "count" | "detail"
+  },
   "hc": {
     "socketPath": null,
     "parentTerminal": null
@@ -1661,6 +1673,8 @@ Env overrides (all optional):
 - `parallelWrites: false` prevents cwd races.
 - `cleanup: "keep"` keeps terminals/sessions for inspection; users can remove.
 - `notify: "async"` makes background work useful.
+- `ui.status: "detail"` names the only running child (or counts blocked children) in one
+  bounded footer line; `count` keeps the legacy `N active`, `off` writes no status.
 
 ### 18.4 Config access
 

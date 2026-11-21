@@ -182,7 +182,10 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
     }
 
     if (ctx.hasUI) {
-      widget = new HcSubagentsWidget(ctx.ui, { width: () => process.stdout.columns ?? 100 });
+      widget = new HcSubagentsWidget(ctx.ui, {
+        width: () => process.stdout.columns ?? 100,
+        statusMode: runtime.config.ui.status,
+      });
       widget.start();
     }
     session.onRecordChange = () => refreshWidget();

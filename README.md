@@ -223,8 +223,21 @@ Run `/hc-subagents config` to print the effective configuration and agent direct
 
 Relevant keys: `defaultMode`, `notify`, `retentionDays`, `killOnTimeout`,
 `monitorAfterReturn`, `intertool.exposeService`, `intertool.emitEvents`,
-`intertool.includeTaskPreview`, `hc.socketPath`, `hc.parentTerminal`, and the existing
-concurrency, polling, and timeout values.
+`intertool.includeTaskPreview`, `ui.status`, `hc.socketPath`, `hc.parentTerminal`, and the
+existing concurrency, polling, and timeout values.
+
+### Footer status
+
+`ui.status` (default `detail`) controls the one-line footer status set through
+`ctx.ui.setStatus`; the widget above the editor is independent of it.
+
+- `detail` — names the only running child (`↳ reviewer 2m`), marks a blocked one
+  (`↳ reviewer 1m blocked`), and counts blocked children when several run
+  (`3 active · 1 blocked`).
+- `count` — always the legacy `N active`.
+- `off` — no footer status at all; the widget and result cards still render.
+
+The status line is bounded to 64 characters and never carries task or result text.
 
 ### Latency
 

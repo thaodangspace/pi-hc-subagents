@@ -4,7 +4,11 @@
  * One line per active child, at most six lines plus an overflow marker. Never
  * includes task or result text. Rendering is debounced to 250 ms and refreshed
  * once per second so elapsed durations stay current.
+ *
+ * The footer carries `ui.status`: nothing, the legacy `N active` count, or a
+ * detail line that names the only running child or counts blocked children.
  */
+import type { UiStatusMode } from "../config/schema.ts";
 import { formatDuration } from "../runtime/result-format.ts";
 import type { SubagentRecord } from "../runtime/types.ts";
 
@@ -70,6 +74,43 @@ export function formatWidgetLines(
   return lines;
 }
 
+/** Status text stays far below the width of the footer; never task text. */
+export const STATUS_MAX_CHARS = 64;
+
+function boundStatus(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= STATUS_MAX_CHARS ? flat : `${flat.slice(0, STATUS_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+/**
+ * Footer status text for the current records.
+ *
+ * `count` keeps the legacy `N active` string; `detail` names the single active
+ * child with its elapsed time and marks a blocked one, so a permission prompt is
+ * visible where the user is looking without opening a card.
+ */
+export function formatStatus(
+  records: readonly WidgetRecordLike[],
+  options: { mode?: UiStatusMode; now?: number } = {},
+): string | undefined {
+  const mode = options.mode ?? "detail";
+  if (mode === "off") return undefined;
+  const active = activeRecords(records);
+  if (active.length === 0) return undefined;
+  if (mode === "count") return `${active.length} active`;
+
+  const blocked = active.filter((record) => record.state === "blocked").length;
+  if (active.length === 1) {
+    const record = active[0] as WidgetRecordLike;
+    const now = options.now ?? Date.now();
+    const started = Date.parse(record.createdAt);
+    const elapsed = Number.isFinite(started) ? formatDuration(Math.max(0, now - started)) : "";
+    const parts = [`↳ ${record.agent}`, elapsed, record.state === "blocked" ? "blocked" : ""].filter(Boolean);
+    return boundStatus(parts.join(" "));
+  }
+  return boundStatus(`${active.length} active${blocked > 0 ? ` · ${blocked} blocked` : ""}`);
+}
+
 export interface WidgetUi {
   setStatus(key: string, text: string | undefined): void;
   setWidget(key: string, content: string[] | undefined, options?: { placement?: "aboveEditor" | "belowEditor" }): void;
@@ -80,6 +121,8 @@ export interface HcSubagentsWidgetOptions {
   width?: () => number;
   debounceMs?: number;
   intervalMs?: number;
+  /** Footer verbosity from `ui.status`; defaults to `detail`. */
+  statusMode?: UiStatusMode;
 }
 
 export class HcSubagentsWidget {
@@ -88,6 +131,7 @@ export class HcSubagentsWidget {
   readonly #width: () => number;
   readonly #debounceMs: number;
   readonly #intervalMs: number;
+  readonly #statusMode: UiStatusMode;
   #records: readonly WidgetRecordLike[] = [];
   #timer: ReturnType<typeof setTimeout> | null = null;
   #interval: ReturnType<typeof setInterval> | null = null;
@@ -102,6 +146,7 @@ export class HcSubagentsWidget {
     this.#width = options.width ?? (() => 100);
     this.#debounceMs = Math.max(0, options.debounceMs ?? DEBOUNCE_MS);
     this.#intervalMs = Math.max(250, options.intervalMs ?? REFRESH_MS);
+    this.#statusMode = options.statusMode ?? "detail";
   }
 
   start(): void {
@@ -155,8 +200,7 @@ export class HcSubagentsWidget {
     }
     this.#lastRender = now;
 
-    const active = activeRecords(this.#records);
-    const status = active.length > 0 ? `${active.length} active` : undefined;
+    const status = formatStatus(this.#records, { mode: this.#statusMode, now });
     const lines = formatWidgetLines(this.#records, { width: this.#width(), now });
     const serialized = lines.join("\n");
 
