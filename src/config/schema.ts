@@ -12,6 +12,14 @@ export type CleanupPolicy = "keep" | "remove";
 export type Exposure = "direct" | "model-only";
 
 /**
+ * Model compression for over-budget, handoff-less child reports.
+ *
+ * `off` keeps the deterministic digest only; `model` allows at most one
+ * bounded summarizer call per settled turn.
+ */
+export type ResultSummarizerMode = "off" | "model";
+
+/**
  * Footer status verbosity.
  *
  * `off` never writes a status, `count` keeps the legacy `N active` string, and
@@ -62,6 +70,8 @@ export interface HcSubagentsConfig {
   retentionDays: number;
   /** Wake waiters on the child's settled pipe notification; false is poll-only. */
   wakeOnSettle: boolean;
+  /** Compress an over-budget, handoff-less report once per settled turn. */
+  resultSummarizer: ResultSummarizerMode;
   excludeTools: string[];
   exposure: Exposure;
   intertool: IntertoolConfig;
@@ -85,6 +95,7 @@ export const DEFAULT_CONFIG: Readonly<HcSubagentsConfig> = Object.freeze({
   cleanup: "keep",
   retentionDays: 14,
   wakeOnSettle: true,
+  resultSummarizer: "off",
   excludeTools: ["hc_subagent", "hc_subagent_control"],
   exposure: "direct",
   intertool: {
@@ -126,6 +137,7 @@ const DEFAULT_MODES: readonly DefaultMode[] = ["sync", "async"];
 const NOTIFY_MODES: readonly NotifyMode[] = ["async", "none"];
 const CLEANUP_POLICIES: readonly CleanupPolicy[] = ["keep", "remove"];
 const EXPOSURES: readonly Exposure[] = ["direct", "model-only"];
+const RESULT_SUMMARIZER_MODES: readonly ResultSummarizerMode[] = ["off", "model"];
 const UI_STATUS_MODES: readonly UiStatusMode[] = ["off", "count", "detail"];
 
 export function cloneDefaultConfig(): HcSubagentsConfig {
@@ -357,6 +369,7 @@ export function validateConfig(raw: unknown, source: ConfigSource): ValidationRe
   enumeration("agentScope", AGENT_SCOPES);
   enumeration("cleanup", CLEANUP_POLICIES);
   enumeration("exposure", EXPOSURES);
+  enumeration("resultSummarizer", RESULT_SUMMARIZER_MODES);
 
   const excludeTools = validateStringArray(raw, "excludeTools", source, warnings);
   if (excludeTools !== undefined) value.excludeTools = excludeTools;
@@ -441,6 +454,20 @@ export function envOverrides(env: NodeJS.ProcessEnv): ValidationResult {
         field: "PI_HC_SUBAGENTS_AGENT_SCOPE",
         message: `expected one of ${AGENT_SCOPES.join(", ")}`,
         value: scope,
+      });
+    }
+  }
+
+  const resultSummarizer = env.PI_HC_SUBAGENTS_RESULT_SUMMARIZER;
+  if (resultSummarizer !== undefined && resultSummarizer !== "") {
+    if ((RESULT_SUMMARIZER_MODES as readonly string[]).includes(resultSummarizer)) {
+      value.resultSummarizer = resultSummarizer as ResultSummarizerMode;
+    } else {
+      warnings.push({
+        source: "env",
+        field: "PI_HC_SUBAGENTS_RESULT_SUMMARIZER",
+        message: `expected one of ${RESULT_SUMMARIZER_MODES.join(", ")}`,
+        value: resultSummarizer,
       });
     }
   }

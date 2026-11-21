@@ -13,6 +13,12 @@ export const RESULT_CONTENT_MAX_LINES = 200;
 /** Ceiling for `verbosity: "full"`; content is never unbounded. */
 export const FULL_CONTENT_MAX_BYTES = 50 * 1024;
 export const FULL_CONTENT_MAX_LINES = 2000;
+/** Model summarizer input bound; the child text is condensed to this first. */
+export const SUMMARIZER_INPUT_MAX_BYTES = 128 * 1024;
+/** Model summarizer output bound; a larger summary is condensed, not failed. */
+export const SUMMARIZER_OUTPUT_MAX_BYTES = 4 * 1024;
+/** One summarizer call per settled turn; no retries. */
+export const SUMMARIZER_TIMEOUT_MS = 10_000;
 /** Chain `{previous}` keeps its own budget so result tuning cannot shrink it. */
 export const PREVIOUS_TASK_MAX_BYTES = 50 * 1024;
 export const DETAILS_TEXT_MAX_BYTES = 50 * 1024;

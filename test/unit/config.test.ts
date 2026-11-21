@@ -294,6 +294,81 @@ test("wakeOnSettle loads from a project config layer", async () => {
   }
 });
 
+test("resultSummarizer defaults to off", () => {
+  assert.equal(DEFAULT_CONFIG.resultSummarizer, "off");
+  assert.equal(cloneDefaultConfig().resultSummarizer, "off");
+  assert.deepEqual(validateConfig({}, "global").value, {});
+});
+
+test("resultSummarizer accepts off/model from a config file", async () => {
+  for (const mode of ["off", "model"] as const) {
+    const result = validateConfig({ resultSummarizer: mode }, "project");
+    assert.deepEqual(result.value, { resultSummarizer: mode });
+    assert.deepEqual(result.warnings, []);
+  }
+
+  const root = await scratch();
+  try {
+    const agentDir = path.join(root, "agent");
+    const cwd = path.join(root, "repo");
+    await writeJson(path.join(agentDir, "hc-subagents.json"), { resultSummarizer: "off" });
+    await writeJson(path.join(cwd, ".pi", "hc-subagents.json"), { resultSummarizer: "model" });
+
+    const loaded = await loadConfig({ cwd, trusted: true, agentDir, env: {} });
+    assert.equal(loaded.config.resultSummarizer, "model");
+    assert.deepEqual(loaded.warnings, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("PI_HC_SUBAGENTS_RESULT_SUMMARIZER overrides the config file", async () => {
+  const root = await scratch();
+  try {
+    const agentDir = path.join(root, "agent");
+    const cwd = path.join(root, "repo");
+    await writeJson(path.join(cwd, ".pi", "hc-subagents.json"), { resultSummarizer: "off" });
+
+    const loaded = await loadConfig({
+      cwd,
+      trusted: true,
+      agentDir,
+      env: { PI_HC_SUBAGENTS_RESULT_SUMMARIZER: "model" },
+    });
+    assert.equal(loaded.config.resultSummarizer, "model");
+    assert.deepEqual(loaded.warnings, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an invalid resultSummarizer warns once and keeps the lower-precedence value", async () => {
+  const invalid = validateConfig({ resultSummarizer: "yes" }, "global");
+  assert.deepEqual(invalid.value, {});
+  assert.deepEqual(invalid.warnings.map((warning) => warning.field), ["resultSummarizer"]);
+  assert.match(invalid.warnings[0]?.message ?? "", /off, model/);
+
+  const root = await scratch();
+  try {
+    const agentDir = path.join(root, "agent");
+    const cwd = path.join(root, "repo");
+    await writeJson(path.join(cwd, ".pi", "hc-subagents.json"), { resultSummarizer: "model" });
+
+    const loaded = await loadConfig({
+      cwd,
+      trusted: true,
+      agentDir,
+      env: { PI_HC_SUBAGENTS_RESULT_SUMMARIZER: "yes" },
+    });
+    assert.equal(loaded.config.resultSummarizer, "model");
+    assert.equal(loaded.warnings.length, 1);
+    assert.equal(loaded.warnings[0]?.source, "env");
+    assert.equal(loaded.warnings[0]?.field, "PI_HC_SUBAGENTS_RESULT_SUMMARIZER");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("config diagnostics include paths, warnings, and flags", async () => {
   const root = await scratch();
   try {
