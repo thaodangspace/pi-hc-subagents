@@ -26,7 +26,8 @@ type Mode =
   | "task"
   | "pipe"
   | "pipe-streaming"
-  | "pipe-push";
+  | "pipe-push"
+  | "pipe-flat-turn";
 
 function parseArgs(argv: string[]): { sessionId: string; sessionDir: string; name: string; taskFile: string | null } {
   let sessionId = "";
@@ -67,6 +68,7 @@ function mode(): Mode {
     case "pipe":
     case "pipe-streaming":
     case "pipe-push":
+    case "pipe-flat-turn":
       return value;
     default:
       return "success";
@@ -189,15 +191,23 @@ async function startFakePipe(): Promise<void> {
       followUp: async (text) => {
         pipeTurns++;
         lastPipeText = `Fake follow-up result: ${actualTask(text)}`;
+        // `pipe-flat-turn` fails the follow-up without re-entering `working`, so
+        // hc's turn counter does not advance: two settles share one turn and
+        // only the settle time tells them apart.
+        const flatTurn = selectedMode === "pipe-flat-turn";
         fakeSessionFile = writeSession({
           sessionDir: args.sessionDir,
           sessionId: args.sessionId,
           taskText: actualTask(taskText),
-          stopReason: "stop",
+          stopReason: flatTurn ? "error" : "stop",
           text: lastPipeText,
           followUp: actualTask(text),
           ...(fakeSessionFile === null ? {} : { existingFile: fakeSessionFile }),
         });
+        if (flatTurn) {
+          emitStatus("error", "fake follow-up failed");
+          return { turn: pipeTurns };
+        }
         emitStatus("working", args.name || "fake child");
         setTimeout(() => emitStatus("done", args.name || "fake child"), 100);
         return { turn: pipeTurns };
@@ -373,6 +383,7 @@ switch (selectedMode) {
     setTimeout(() => process.exit(3), 150);
     break;
   case "pipe":
+  case "pipe-flat-turn":
     emitStatus("working", args.name || "fake child");
     void startFakePipe()
       .then(() => {

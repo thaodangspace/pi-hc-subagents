@@ -176,7 +176,7 @@ export function registerHcSubagentsCommand(pi: ExtensionAPI, deps: CommandDeps):
           }
           session.monitors?.stop(record.childId);
           const { record: cancelled, killed } = await cancelRecord(session, record, { force: true });
-          session.notifier?.markDelivered(cancelled.childId, cancelled.turn, "result");
+          session.notifier?.markResultDelivered(cancelled);
           session.service?.emitCancelled(cancelled);
           session.persistence?.append(cancelled);
           session.onRecordChange?.(cancelled);

@@ -346,7 +346,7 @@ export async function cancelRecord(
     settledAt: now,
     ...(updated.sessionFile ? { sessionFile: updated.sessionFile } : {}),
   });
-  session.notifier?.markDelivered(updated.childId, updated.turn, "result");
+  session.notifier?.markResultDelivered(updated);
   if (killed) {
     await session.runtime.core.remove(record.terminal).catch(() => {});
   }

@@ -2,11 +2,13 @@
  * Parent notification queue for background children.
  *
  * Delivery is a custom message (`hc-subagent-result`), never a user message.
- * Notifications are deduplicated by `(childId, turn, type)` (blocked episodes
- * add their episode number), batched to at most three per delivery, and retried
- * while the parent is busy or compacting.
+ * Notifications are deduplicated by their delivery key: a result keys on
+ * `(childId, turn, settle time)` so two genuine settles sharing one `hc` turn
+ * are both delivered while a replay of one publish is not, and a blocked
+ * episode adds its episode number. Batched to at most three per delivery, and
+ * retried while the parent is busy or compacting.
  */
-import type { SubagentState, TurnOutcome } from "./types.ts";
+import type { SubagentRecord, SubagentState, TurnOutcome } from "./types.ts";
 
 export const ASYNC_MESSAGE_TYPE = "hc-subagent-result";
 export const MAX_BATCH = 3;
@@ -26,8 +28,12 @@ export interface NotificationItem {
   terminal: string;
   content: string;
   details: unknown;
-  /** Overrides the default dedupe key (blocked episodes). */
-  key?: string;
+  /**
+   * Authoritative dedupe key for this item. Builders set it from
+   * `resultDeliveryKey` / `blockedEpisodeKey`; `Notifier#keyOf` is the only
+   * place that falls back to the default key.
+   */
+  deliveryKey?: string;
 }
 
 export interface NotificationMessage {
@@ -57,8 +63,28 @@ export interface NotifierOptions {
   cancelRetry?: () => void;
 }
 
+type DeliveryKeyRecord = Pick<SubagentRecord, "childId" | "turn" | "turns">;
+
 export function defaultNotificationKey(item: Pick<NotificationItem, "childId" | "turn" | "type">): string {
   return `${item.childId}:${item.turn}:${item.type}`;
+}
+
+/**
+ * Key one result settle.
+ *
+ * `hc`'s `turn` counter only advances when a status leaves `working`, so two
+ * genuine settles can share it; the last turn's `settledAt` is the
+ * discriminator. Legacy records without it keep the turn-only key.
+ */
+export function resultDeliveryKey(record: DeliveryKeyRecord): string {
+  const key = defaultNotificationKey({ childId: record.childId, turn: record.turn, type: "result" });
+  const settledAt = record.turns.at(-1)?.settledAt;
+  return settledAt ? `${key}:${settledAt}` : key;
+}
+
+/** Key one blocked episode; episodes never share a key on the same turn. */
+export function blockedEpisodeKey(record: DeliveryKeyRecord, episode: number): string {
+  return `${defaultNotificationKey({ childId: record.childId, turn: record.turn, type: "blocked" })}:${episode}`;
 }
 
 function summaryContent(items: NotificationItem[], limit = SUMMARY_MAX_BYTES): string {
@@ -117,20 +143,17 @@ export class Notifier {
   }
 
   keyOf(item: NotificationItem): string {
-    return item.key ?? defaultNotificationKey(item);
-  }
-
-  hasDelivered(childId: string, turn: number, type: NotificationType): boolean {
-    return this.#delivered.has(`${childId}:${turn}:${type}`);
+    return item.deliveryKey ?? defaultNotificationKey(item);
   }
 
   /** Mark a result delivered by another path (sync tool result / control wait). */
-  markDelivered(childId: string, turn: number, type: NotificationType): void {
-    this.#remember(`${childId}:${turn}:${type}`);
+  markResultDelivered(record: DeliveryKeyRecord): void {
+    this.#remember(resultDeliveryKey(record));
   }
 
-  markKeyDelivered(key: string): void {
-    this.#remember(key);
+  /** Mark one blocked episode delivered by another path. */
+  markBlockedDelivered(record: DeliveryKeyRecord, episode: number): void {
+    this.#remember(blockedEpisodeKey(record, episode));
   }
 
   enqueue(item: NotificationItem): boolean {
