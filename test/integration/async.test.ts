@@ -355,7 +355,10 @@ test("widget shows active children and clears without task text", { skip: !avail
     };
     const result = await harness.execute({ agent: "reviewer", task: "Widget secret task.", background: true });
     assert.ok(result.details.childId);
-    await harness.waitFor(() => (statuses.includes("1 active") ? true : undefined));
+    // Default `ui.status: "detail"` names the only running child; `count` is unit-tested.
+    await harness.waitFor(() =>
+      statuses.some((text) => text?.startsWith("↳ reviewer")) ? true : undefined,
+    );
     assert.equal(widgets.some((lines) => lines?.some((line) => line.includes("Widget secret task"))), false);
 
     await harness.waitFor(() => {
