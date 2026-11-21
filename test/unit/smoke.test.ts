@@ -35,6 +35,8 @@ test("the extension module loads with a mock pi API and registers no tools up fr
     { kind: "handler", name: "before_agent_start" },
     { kind: "command", name: "hc-subagents" },
     { kind: "handler", name: "session_start" },
+    // Second before_agent_start: the summarizer gateway refresh.
+    { kind: "handler", name: "before_agent_start" },
     { kind: "handler", name: "agent_settled" },
     { kind: "handler", name: "session_before_compact" },
     { kind: "handler", name: "session_compact" },

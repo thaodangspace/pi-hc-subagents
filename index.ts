@@ -3,7 +3,11 @@
  *
  * `index.ts` is wiring only. Business logic lives in `src/`.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  generateSummaryWithUsage,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 import { runsRootFor } from "./src/child/paths.ts";
 import { Registry } from "./src/runtime/registry.ts";
@@ -26,6 +30,10 @@ import {
 } from "./src/intertool/service.ts";
 import { HcSubagentsWidget } from "./src/ui/widget.ts";
 import { registerAgentCatalogPrompt, refreshAgentCatalog } from "./src/runtime/agent-catalog.ts";
+import {
+  createSummarizerGateway,
+  type SummarizerGatewayWarning,
+} from "./src/runtime/summarizer-gateway.ts";
 import { registerHcSubagentsCommand } from "./src/ui/command.ts";
 import { registerHcSubagentsRenderers } from "./src/ui/renderers.ts";
 import { PiSessionResultAdapter } from "./src/child/pi-result-adapter.ts";
@@ -42,6 +50,9 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
   let toolsRegistered = false;
   let setupNotified = false;
   let compacting = false;
+  // The summarizer degradation notice is worth one line per session, not one
+  // per turn.
+  let summarizerWarned = false;
 
   registerHcSubagentsRenderers(pi);
   registerAgentCatalogPrompt(pi, () => toolSession);
@@ -58,8 +69,78 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
     );
   }
 
+  /**
+   * pi's request auth may carry `null` header-deletion markers; a fresh summary
+   * request has no prior headers to delete, so only strings are forwarded.
+   */
+  function summaryHeaders(
+    headers: Record<string, string | null> | undefined,
+  ): Record<string, string> | undefined {
+    if (!headers) return undefined;
+    const kept: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+      if (typeof value === "string") kept[key] = value;
+    }
+    return kept;
+  }
+
+  /**
+   * Build (or rebuild) the summarizer gateway from the current parent context.
+   *
+   * Fail open: with config `off` the gateway is never constructed, and any
+   * problem while building leaves `session.summarizer` `null`, which is the
+   * `off` path. One warning is surfaced per session when the UI exists.
+   */
+  async function refreshSummarizer(session: ToolSession, ctx: ExtensionContext): Promise<void> {
+    if (session.runtime.config.resultSummarizer !== "model") {
+      session.summarizer = undefined;
+      return;
+    }
+    let summarizer: ToolSession["summarizer"] = null;
+    let warning: SummarizerGatewayWarning | undefined;
+    try {
+      const gateway = await createSummarizerGateway({
+        model: ctx.model,
+        getAuth: async (model) => {
+          const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+          if (!auth.ok) return { ok: false };
+          return { ok: true, apiKey: auth.apiKey, headers: summaryHeaders(auth.headers) };
+        },
+        generate: (request) =>
+          generateSummaryWithUsage(
+            [{ role: "user", content: request.text, timestamp: Date.now() }],
+            request.model,
+            undefined,
+            request.apiKey,
+            request.headers,
+            request.signal,
+            request.instructions,
+            undefined,
+            request.thinkingLevel,
+            request.streamFn,
+          ),
+        thinkingLevel: ctx.thinkingLevel,
+      });
+      summarizer = gateway.summarizer;
+      warning = gateway.warnings[0];
+    } catch {
+      // Never let the feature fail a session or a turn.
+      summarizer = null;
+    }
+    if (warning && !summarizerWarned) {
+      summarizerWarned = true;
+      try {
+        if (ctx.hasUI) ctx.ui.notify(`hc-subagents: ${warning.message}`, "warning");
+      } catch {
+        // A UI hiccup must not degrade the gateway that was just built.
+      }
+    }
+    session.summarizer = summarizer;
+  }
+
   async function teardownSession(): Promise<void> {
     const current = toolSession;
+    summarizerWarned = false;
     widget?.dispose();
     widget = null;
     toolSession = null;
@@ -134,6 +215,7 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
     };
     session.providers = new ProviderRegistry([new HcLocalProvider(session)]);
     session.resultAdapters = new ResultAdapterRegistry(new PiSessionResultAdapter());
+    await refreshSummarizer(session, ctx);
 
     const fromEntries = persistence.restore(runtime.parentSessionId);
     const runsRoot = runsRootFor({ agentDir: runtime.agentDir, env: runtime.env });
@@ -217,6 +299,14 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
     }
     // Tools are registered only after prerequisite checks. Never expose a tool
     // when the runtime is not ready.
+  });
+
+  // Fires every turn: a model switch or a lost credential is picked up before
+  // the next settle, and a stale model ref is never used.
+  pi.on("before_agent_start", async (_event, ctx) => {
+    const session = toolSession;
+    if (!session) return;
+    await refreshSummarizer(session, ctx);
   });
 
   pi.on("agent_settled", () => {
