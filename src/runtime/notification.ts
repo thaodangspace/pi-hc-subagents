@@ -32,6 +32,8 @@ export function resultNotification(record: SubagentRecord, finalized: FinalizeRe
     text: record.turns.at(-1)?.text ?? "",
     textTruncated: details.textTruncated ?? false,
     error: details.error,
+    // A live child with a pipe can be resumed, so it may settle and notify again.
+    resumable: record.terminalState === "live" && Boolean(record.pipeName),
   });
   return {
     type: "result",
