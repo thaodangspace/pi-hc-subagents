@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { HcSubagentError } from "../core/error.ts";
+import { MAX_ALLOWED_COMMANDS, validateAllowedCommand } from "../child/command-allowlist.ts";
 import { normalizeNewlines, parseAgentFile } from "./frontmatter.ts";
 
 export type AgentSourceKind = "user" | "project" | "package";
@@ -22,6 +23,10 @@ export interface AgentDefinition {
   description: string;
   systemPrompt: string;
   tools?: string[];
+  /** Tool names removed from the inherited/allowlisted set before spawn. */
+  disallowedTools?: string[];
+  /** Conservative prefix allowlist for bash/powershell on write agents. */
+  allowedCommands?: string[];
   model?: string;
   thinking?: ThinkingLevel;
   access: AgentAccess;
@@ -84,29 +89,48 @@ function parseStringList(value: unknown): string[] | undefined {
   return items.length > 0 ? [...new Set(items)] : undefined;
 }
 
-function inferAccess(tools: string[] | undefined, explicit: AgentAccess | undefined): AgentAccess {
+function inferAccess(
+  tools: string[] | undefined,
+  explicit: AgentAccess | undefined,
+  disallowedTools: string[] | undefined,
+): AgentAccess {
   if (explicit) return explicit;
   if (!tools) return "write";
-  return tools.some((tool) => WRITE_TOOLS.has(tool)) ? "write" : "read-only";
+  const denied = new Set(disallowedTools ?? []);
+  return tools.some((tool) => !denied.has(tool) && WRITE_TOOLS.has(tool)) ? "write" : "read-only";
 }
 
-export function hasWriteCapableTools(agent: Pick<AgentDefinition, "tools">): boolean {
-  return (agent.tools ?? []).some((tool) => WRITE_TOOLS.has(tool));
+export function hasWriteCapableTools(
+  agent: Pick<AgentDefinition, "tools" | "disallowedTools">,
+): boolean {
+  const denied = new Set(agent.disallowedTools ?? []);
+  return (agent.tools ?? []).some((tool) => !denied.has(tool) && WRITE_TOOLS.has(tool));
 }
 
-/** The explicit tool allowlist a read-only child receives. */
+/** Effective tool allowlist after `disallowedTools`, plus the read-only default. */
 export function effectiveAgentTools(agent: AgentDefinition): string[] | undefined {
-  if (agent.access === "write") return agent.tools;
-  const tools = agent.tools && agent.tools.length > 0 ? agent.tools : DEFAULT_READ_ONLY_TOOLS;
+  const denied = new Set(agent.disallowedTools ?? []);
+  const allowed = agent.tools?.filter((tool) => !denied.has(tool));
+  if (agent.access === "write") return allowed === undefined ? undefined : allowed;
+  const tools = (allowed && allowed.length > 0 ? allowed : DEFAULT_READ_ONLY_TOOLS).filter(
+    (tool) => !denied.has(tool),
+  );
   return tools;
 }
 
 export function validateAgentForSpawn(agent: AgentDefinition, options: { trusted: boolean }): void {
   if (agent.access === "read-only" && hasWriteCapableTools(agent)) {
-    const offending = (agent.tools ?? []).filter((tool) => WRITE_TOOLS.has(tool));
+    const denied = new Set(agent.disallowedTools ?? []);
+    const offending = (agent.tools ?? []).filter((tool) => !denied.has(tool) && WRITE_TOOLS.has(tool));
     throw new HcSubagentError(
       "validation",
       `agent ${agent.name} is read-only but allows write-capable tools: ${offending.join(", ")}`,
+    );
+  }
+  if (agent.tools !== undefined && (effectiveAgentTools(agent)?.length ?? 0) === 0) {
+    throw new HcSubagentError(
+      "validation",
+      `agent ${agent.name} has no tools left after disallowedTools; omitting --tools would expose pi's defaults`,
     );
   }
   if (agent.source === "project" && !options.trusted) {
@@ -165,6 +189,29 @@ async function readAgentFile(
   }
 
   const tools = parseStringList(frontmatter.tools);
+  const disallowedTools = parseStringList(frontmatter.disallowedTools);
+
+  let allowedCommands: string[] | undefined;
+  const rawAllowedCommands = parseStringList(frontmatter.allowedCommands);
+  if (rawAllowedCommands !== undefined) {
+    if (rawAllowedCommands.length > MAX_ALLOWED_COMMANDS) {
+      warnings.push({
+        filePath,
+        field: "allowedCommands",
+        message: `more than ${MAX_ALLOWED_COMMANDS} commands; using the first ${MAX_ALLOWED_COMMANDS}`,
+      });
+    }
+    const valid: string[] = [];
+    for (const command of rawAllowedCommands.slice(0, MAX_ALLOWED_COMMANDS)) {
+      const issue = validateAllowedCommand(command);
+      if (issue) {
+        warnings.push({ filePath, field: "allowedCommands", message: `${issue}: ${JSON.stringify(command)}` });
+      } else {
+        valid.push(command.trim());
+      }
+    }
+    if (valid.length > 0) allowedCommands = [...new Set(valid)];
+  }
 
   let thinking: ThinkingLevel | undefined;
   if (frontmatter.thinking !== undefined) {
@@ -223,9 +270,11 @@ async function readAgentFile(
     description,
     systemPrompt: normalizeNewlines(parsed.body).trim(),
     ...(tools === undefined ? {} : { tools }),
+    ...(disallowedTools === undefined ? {} : { disallowedTools }),
+    ...(allowedCommands === undefined ? {} : { allowedCommands }),
     ...(model === undefined ? {} : { model }),
     ...(thinking === undefined ? {} : { thinking }),
-    access: inferAccess(tools, access),
+    access: inferAccess(tools, access, disallowedTools),
     ...(skills === undefined ? {} : { skills }),
     ...(extensions === undefined ? {} : { extensions }),
     ...(cwd === undefined ? {} : { cwd }),
@@ -359,11 +408,27 @@ export function resolveAgent(result: AgentDiscoveryResult, name: string): AgentD
   return agent;
 }
 
-export function formatAgentList(agents: AgentDefinition[], maxItems = 40): { text: string; remaining: number } {
+function oneLine(value: string, maxLength = 160): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+export function formatAgentList(
+  agents: AgentDefinition[],
+  maxItems = 40,
+): { text: string; remaining: number } {
   if (agents.length === 0) return { text: "none", remaining: 0 };
   const listed = agents.slice(0, maxItems);
   return {
-    text: listed.map((agent) => `${agent.name} (${agent.source}): ${agent.description}`).join("; "),
+    text: listed
+      .map((agent) => {
+        const mode = agent.access === "read-only" ? ", read-only" : "";
+        return `- ${agent.name} (${agent.source}${mode}): ${oneLine(agent.description)}`;
+      })
+      .join("\n"),
     remaining: agents.length - listed.length,
   };
 }

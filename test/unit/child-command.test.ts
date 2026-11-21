@@ -46,6 +46,64 @@ function pathsFor(agentName = "reviewer") {
   });
 }
 
+test("disallowedTools and allowedCommands reach the child argv and env", async () => {
+  const cwd = await scratchCwd("hc plan guarded");
+  try {
+    const paths = pathsFor("guarded");
+    const plan = buildSpawnPlan({
+      agent: reviewerAgent({
+        name: "guarded",
+        access: "write",
+        tools: ["read", "bash", "edit", "write", "grep"],
+        disallowedTools: ["edit", "write"],
+        allowedCommands: ["git status", "npm test"],
+        skills: undefined,
+        extensions: undefined,
+        model: undefined,
+        thinking: undefined,
+      }),
+      task: "Check the tree",
+      cwd,
+      paths,
+      parentTerminalId: "t3",
+      parentSessionId: "parent-session",
+      trust: { projectTrusted: true, parentCwd: cwd },
+      env: { PATH: "/bin", PI_HC_ALLOWED_COMMANDS: '["rm -rf /"]' },
+      piInvocation: ["/opt/pi/bin/pi"],
+    });
+
+    assert.equal(plan.argv[plan.argv.indexOf("--tools") + 1], "read,bash,grep");
+    const excluded = plan.argv[plan.argv.indexOf("--exclude-tools") + 1] ?? "";
+    assert.match(excluded, /edit/);
+    assert.match(excluded, /write/);
+    assert.match(excluded, /hc_subagent_control/);
+    assert.equal(plan.env.PI_HC_ALLOWED_COMMANDS, JSON.stringify(["git status", "npm test"]));
+    assert.equal(plan.env.PI_HC_SUBAGENT, "1");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("an inherited command allowlist is cleared when the agent has none", async () => {
+  const cwd = await scratchCwd("hc plan clear");
+  try {
+    const plan = buildSpawnPlan({
+      agent: reviewerAgent({ source: "package", filePath: "/package/agents/reviewer.md" }),
+      task: "Review",
+      cwd,
+      paths: pathsFor(),
+      parentTerminalId: "t3",
+      parentSessionId: "parent-session",
+      trust: { projectTrusted: true, parentCwd: cwd },
+      env: { PATH: "/bin", PI_HC_ALLOWED_COMMANDS: '["rm -rf /"]' },
+      piInvocation: ["/opt/pi/bin/pi"],
+    });
+    assert.equal(plan.env.PI_HC_ALLOWED_COMMANDS, "");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("run paths are deterministic and bounded", () => {
   const paths = pathsFor();
   assert.equal(paths.runId, "20261120T034008Z-a1b2c3");
