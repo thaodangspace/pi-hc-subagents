@@ -13,6 +13,7 @@ import type { AgentSource } from "../agents/agents.ts";
 import type { AgentCatalog } from "../runtime/agent-catalog.ts";
 import type { ProviderRegistry, ResultAdapterRegistry } from "../intertool/adapters.ts";
 import type { SettleHintHub } from "../runtime/settle-hints.ts";
+import type { ResultSummarizer } from "../runtime/summarizer.ts";
 
 export interface ToolSession {
   runtime: ExtensionRuntime;
@@ -32,6 +33,11 @@ export interface ToolSession {
   providers?: ProviderRegistry;
   /** Result readers; the pi session adapter is the fallback. */
   resultAdapters?: ResultAdapterRegistry;
+  /**
+   * Model summarizer gateway; `null`/absent means the `resultSummarizer: "off"`
+   * path. Wired in `index.ts`, so no runtime module imports pi for it.
+   */
+  summarizer?: ResultSummarizer | null;
   /** Called after records change so the UI can refresh. */
   onRecordChange?: (record?: SubagentRecord) => void;
   /** True when the parent agent is idle; used by notification delivery. */

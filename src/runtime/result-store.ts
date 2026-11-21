@@ -8,6 +8,7 @@
 import { readFile } from "node:fs/promises";
 
 import { emptyUsage, type SubagentState, type TurnOutcome, type Usage } from "./types.ts";
+import type { SummarizerUsage } from "./summarizer.ts";
 import { writeFileAtomic } from "../child/child-files.ts";
 
 export const RESULT_VERSION = 1;
@@ -28,6 +29,10 @@ export interface ResultJson {
   startedAt: string;
   settledAt: string;
   error: string | null;
+  /** Model summary of the child text; absent unless the summarizer succeeded. */
+  summary?: string;
+  /** Summarizer tokens/cost; separate from the child turn's `usage`. */
+  summaryUsage?: SummarizerUsage;
 }
 
 export function boundResultText(text: string, maxBytes = MAX_RESULT_TEXT_BYTES): { text: string; textTruncated: boolean } {
@@ -54,6 +59,8 @@ export interface BuildResultInput {
   startedAt: string;
   settledAt: string;
   error?: string | null;
+  summary?: string;
+  summaryUsage?: SummarizerUsage;
   maxTextBytes?: number;
 }
 
@@ -73,6 +80,8 @@ export function buildResultJson(input: BuildResultInput): ResultJson {
     startedAt: input.startedAt,
     settledAt: input.settledAt,
     error: input.error ?? null,
+    ...(input.summary === undefined ? {} : { summary: input.summary }),
+    ...(input.summaryUsage === undefined ? {} : { summaryUsage: input.summaryUsage }),
   };
 }
 

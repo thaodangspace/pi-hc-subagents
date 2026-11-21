@@ -23,6 +23,11 @@ import {
   truncateForModel,
 } from "./result-format.ts";
 import { buildResultJson, writeResultFile } from "./result-store.ts";
+import {
+  summarizeReport,
+  type ResultSummarizer,
+  type SummarizeReportResult,
+} from "./summarizer.ts";
 import type { SubagentRecord, TurnOutcome } from "./types.ts";
 import { coreStatusOf, updateCurrentTurns } from "./types.ts";
 import type { ToolSession } from "../tools/session.ts";
@@ -108,6 +113,11 @@ export interface FinalizeOptions {
    * Background notifications never set it; their envelope has its own budget.
    */
   verbosity?: ResultVerbosity;
+  /**
+   * Summarizer gateway override; defaults to `session.summarizer`. The config
+   * gate still lives in `session.runtime.config.resultSummarizer`.
+   */
+  summarizer?: ResultSummarizer | null;
 }
 
 export interface FinalizeResult {
@@ -120,6 +130,14 @@ export interface FinalizeResult {
   record: SubagentRecord;
   outcome: TurnOutcome;
   state: SubagentRecord["state"];
+}
+
+/**
+ * Config gate for the summarizer. A bare test session without a runtime has no
+ * config, so it counts as `off` and never reaches the summarizer.
+ */
+function summarizerEnabled(session: ToolSession): boolean {
+  return session.runtime?.config?.resultSummarizer === "model";
 }
 
 export async function finalizeFromSession(options: FinalizeOptions): Promise<FinalizeResult> {
@@ -208,7 +226,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
   const textInfo = parsed.text.length > 0 ? detailsText(parsed.text) : { textTruncated: false };
   // Computed once: the same selection feeds the content and the two flags.
   const verbosity = options.verbosity ?? "summary";
-  const facing: ModelFacingResult = modelFacingResult(parsed.text, { verbosity });
+  const baseFacing: ModelFacingResult = modelFacingResult(parsed.text, { verbosity });
   const updated = session.registry.update(record.childId, {
     state,
     terminalState: terminal.state,
@@ -231,6 +249,25 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
     })),
   });
 
+  // One config-gated summarizer call on the success path only; every closed
+  // gate or fault returns `baseFacing` untouched, so `off` is byte-identical.
+  const summarize: SummarizeReportResult =
+    state === "failed"
+      ? { facing: baseFacing, summarized: false }
+      : await summarizeReport({
+          text: parsed.text,
+          verbosity,
+          summarizer:
+            options.summarizer === undefined ? (session.summarizer ?? null) : options.summarizer,
+          state: {
+            enabled: summarizerEnabled(session),
+            failed: state !== "completed",
+            facing: baseFacing,
+          },
+        });
+  const facing = summarize.facing;
+  const summary = summarize.summarized ? facing.text : undefined;
+
   const resultJson = buildResultJson({
     childId: updated.childId,
     turn: Math.max(1, terminal.turn),
@@ -243,6 +280,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
     startedAt: record.turns[0]?.startedAt ?? record.createdAt,
     settledAt: now,
     error: parsed.error ?? null,
+    ...(summary === undefined ? {} : { summary, summaryUsage: summarize.usage }),
   });
   await writeResultFile(options.resultFile, resultJson).catch(() => {});
   await persistRunSummary(updated, {
@@ -263,6 +301,10 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
     textTruncated: textInfo.textTruncated,
     handoff: facing.handoff,
     contentCondensed: facing.condensed,
+    ...(summary === undefined
+      ? {}
+      : { summarized: true, summary, summarizer: summarize.usage }),
+    ...(summarize.error === undefined ? {} : { summarizerError: summarize.error }),
     branchUncertain: parsed.branchUncertain,
     error: parsed.error,
     ...(parsed.error ? { code: "error" } : {}),
@@ -295,6 +337,7 @@ export async function finalizeFromSession(options: FinalizeOptions): Promise<Fin
           textTruncated: textInfo.textTruncated,
           error: parsed.error,
           verbosity,
+          summarized: summarize.summarized,
           facing,
         });
 

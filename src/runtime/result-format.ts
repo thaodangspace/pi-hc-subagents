@@ -5,6 +5,7 @@
  * model-facing cap; details carry paths, state, usage, and bounded text.
  */
 import { stripControlCharacters } from "../core/jsonl.ts";
+import type { SummarizerUsage } from "./summarizer.ts";
 import type { SubagentState, TurnOutcome, Usage } from "./types.ts";
 
 /** Default model-facing result budget: handoff-first, ~2k tokens. */
@@ -56,6 +57,14 @@ export interface SubagentResultDetails {
   handoff?: boolean;
   /** The model-facing content was reduced from the child text to fit its budget. */
   contentCondensed?: boolean;
+  /** The model-facing content is a summary of the child text, not the child's words. */
+  summarized?: boolean;
+  /** The published summary; present only when `summarized` is true. */
+  summary?: string;
+  /** Summarizer tokens/cost; never added to the child turn's `usage`. */
+  summarizer?: SummarizerUsage;
+  /** Stable reason the summarizer fell back to the digest; never provider text. */
+  summarizerError?: string;
   branchUncertain?: boolean;
   error?: string;
   code?: string;
@@ -521,6 +530,8 @@ export interface ResultContentInput {
   error?: string;
   /** Defaults to `summary`; `full` uses the 50 KiB ceiling. */
   verbosity?: ResultVerbosity;
+  /** True when `facing.text` is a summary of `text`, not the child's own words. */
+  summarized?: boolean;
   /** Precomputed selection, so `details` flags describe exactly this content. */
   facing?: ModelFacingResult;
 }
@@ -541,6 +552,9 @@ function sourceSize(text: string): string {
  */
 function resultContentNote(input: ResultContentInput, facing: ModelFacingResult): string | null {
   if (!facing.condensed) return null;
+  if (input.summarized) {
+    return `note: the child's report was summarized for the caller from ${sourceSize(input.text)}; full text is in the session file (hc_subagent_control result verbosity:"full")`;
+  }
   if (!facing.handoff) {
     return "note: the child did not include a ## Handoff section; this is its raw final message, condensed to the caller budget";
   }

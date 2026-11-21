@@ -79,6 +79,99 @@ test("the default cap is 10 MiB", () => {
   assert.equal(MAX_RESULT_TEXT_BYTES, 10 * 1024 * 1024);
 });
 
+test("a summary and its usage are additive optional fields at version 1", async () => {
+  const root = await mkdtemp(path.join("/tmp", "hc-result-"));
+  try {
+    const file = path.join(root, "result.json");
+    const summary = "Status: done. Changed src/a.ts:12.";
+    const summaryUsage = {
+      inputTokens: 1200,
+      outputTokens: 180,
+      costUsd: 0.0004,
+      model: "provider/model-a",
+      durationMs: 900,
+    };
+    const result = buildResultJson({
+      childId: "child-1",
+      turn: 1,
+      state: "completed",
+      outcome: "stop",
+      text: "final text",
+      sessionFile: null,
+      terminal: "t12",
+      startedAt: "2026-11-20T03:40:00.000Z",
+      settledAt: "2026-11-20T03:41:00.000Z",
+      summary,
+      summaryUsage,
+    });
+
+    assert.equal(result.version, 1, "additive fields do not bump the version");
+    assert.equal(result.summary, summary);
+    assert.deepEqual(result.summaryUsage, summaryUsage);
+
+    await writeResultFile(file, result);
+    const raw = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(raw.version, 1);
+    assert.equal(raw.summary, summary);
+    assert.deepEqual(raw.summaryUsage, summaryUsage);
+    assert.deepEqual(await readResultFile(file), result);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("without a summary the optional keys stay absent", async () => {
+  const root = await mkdtemp(path.join("/tmp", "hc-result-"));
+  try {
+    const file = path.join(root, "result.json");
+    const result = buildResultJson({
+      childId: "child-1",
+      turn: 1,
+      state: "completed",
+      outcome: "stop",
+      text: "final text",
+      sessionFile: null,
+      terminal: "t12",
+      startedAt: "a",
+      settledAt: "b",
+    });
+
+    assert.ok(!("summary" in result));
+    assert.ok(!("summaryUsage" in result));
+    await writeResultFile(file, result);
+    const raw = JSON.parse(await readFile(file, "utf8"));
+    assert.ok(!("summary" in raw), "the off path writes no summary key");
+    assert.ok(!("summaryUsage" in raw));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unknown fields are ignored on read, so old and new writers interoperate", async () => {
+  const root = await mkdtemp(path.join("/tmp", "hc-result-"));
+  try {
+    const file = path.join(root, "result.json");
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        childId: "child-1",
+        turn: 1,
+        text: "final text",
+        summary: "a summary from a newer writer",
+        futureField: { nested: true },
+      }),
+      "utf8",
+    );
+    const read = await readResultFile(file);
+    assert.ok(read, "required fields are enough to read the file");
+    assert.equal(read.summary, "a summary from a newer writer");
+    assert.deepEqual((read as unknown as Record<string, unknown>).futureField, { nested: true });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("missing or corrupt result files read as null", async () => {
   const root = await mkdtemp(path.join("/tmp", "hc-result-"));
   try {
