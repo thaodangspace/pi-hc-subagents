@@ -42,6 +42,7 @@ them at the developer's default core.
 | `src/runtime/settle-hints.ts` | Per-child settled-hint hub: one long-lived pipe subscription per child, bounded listener fan-out, de-dupe/staleness, and counters (no task/result text). |
 | `src/runtime/agent-catalog.ts` | Bounded agent name/description catalog injected through `before_agent_start`; lazy refresh, omitted in child mode. |
 | `src/runtime/wake-gate.ts` | Shared timer/wake/abort wait primitive used by monitors and synchronous waits; a hint shortens a wait but never decides a state. |
+| `src/runtime/result-format.ts` | The single model-facing content boundary: handoff extraction, whole-line condensation, the 8 KiB/50 KiB budgets, and the result envelope; `details` flags describe the content it rendered. |
 | `test/unit` | Pure modules, fakes, security checks. |
 | `test/contract` | Pinned `hc schema` contract and minimum-version guard. |
 | `test/integration` | Isolated real `hc` cores with fake or real children. |
@@ -123,6 +124,7 @@ them at the developer's default core.
 | Intertool API/event | `src/intertool/service.ts`, `src/intertool/events.ts`, SPEC §19, README, tests |
 | Settle-hint wake path | frame `src/child/pipe-protocol.ts` / `child.ts`, transport `src/child/pipe-transport.ts`, hub `src/runtime/settle-hints.ts`, gate `src/runtime/wake-gate.ts`, call sites (`src/runtime/async-monitor.ts`, `src/child/wait-child.ts`, `src/runtime/run-background.ts`, `src/runtime/run-ops.ts`), tests |
 | Tool schema/UX | `src/tools/**`, `src/ui/**`, tests |
+| Result budget / handoff contract | `src/runtime/result-format.ts`, `src/child/child-prompt.ts`, SPEC §12.6, tests |
 | Benchmark arm/metric | `bench/arms.ts`, `bench/metrics.ts`, `bench/types.ts`, `test/unit/bench-metrics.test.ts` |
 | Benchmark task suite | `bench/tasks/<id>.json`, `bench/fixture/<id>/` |
 

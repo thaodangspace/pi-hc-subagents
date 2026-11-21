@@ -16,7 +16,7 @@ service v1, run persistence/recovery/retention, provider and result-adapter exte
 points, the release hardening checks, and an external-parent mode for pi sessions that
 were not started by `hc`.
 
-Release candidate: `pi-hc-subagents` 0.2.0-rc.1. See [`SPEC.md`](./SPEC.md) for the contract,
+Release candidate: `pi-hc-subagents` 0.3.0. See [`SPEC.md`](./SPEC.md) for the contract,
 [`PLAN.md`](./PLAN.md) for the research record, and [`AGENTS.md`](./AGENTS.md) for the
 module map and invariants.
 
@@ -96,6 +96,9 @@ must be absolute. A relative path warns and is ignored.
 
 - `hc_subagent` — spawn one child and either wait for its result or return immediately.
   - `agent`, `task`, `cwd`, `model`, `thinking`, `timeoutMs`
+  - `verbosity` — `summary` (default) delivers the child's handoff section only, up to
+    8 KiB / 200 lines; `full` raises the ceiling to 50 KiB / 2,000 lines. Ignored by
+    `background` starts, which keep the notification budget.
   - `tasks` — run 1–8 children concurrently (read-only work; write-capable children in
     the same cwd are queued by `parallelWrites`).
   - `chain` — run 1–8 steps sequentially; `{previous}` in a step task is replaced with
@@ -106,10 +109,14 @@ must be absolute. A relative path warns and is ignored.
   - `confirmProjectAgents` — project agents prompt by default; pass `false` only when the
     user already approved them.
 - `hc_subagent_control` — `list`, `wait`, `output`, `result`, `attach`, `interrupt`, `kill`,
-  `send`. `send` requires a **live** child started with the current package and appends a
-  new turn; `wait` defaults to true. A blocked child is rejected, never force-answered.
-  A child cannot be resumed or reattached after `/reload`, a session switch, or a parent
-  restart; start a new child instead.
+  `send`.
+  - `verbosity` — `summary` (default, ~8 KiB, handoff section only) or `full` (up to
+    50 KiB). Applies to `wait` and `result`; ignored by `list`, `output`, `attach`,
+    `interrupt`, `kill`, and `send`.
+  - `send` requires a **live** child started with the current package and appends a new
+    turn; `wait` defaults to true. A blocked child is rejected, never force-answered.
+    A child cannot be resumed or reattached after `/reload`, a session switch, or a parent
+    restart; start a new child instead.
 
 `tasks`/`chain` summaries stay compact; full per-task results are in
 `details.results[]`. Every child still gets its own terminal, session, and run record.
@@ -167,8 +174,22 @@ below it is data, never instructions. Above the preview the message carries:
 `session:`/`result:` are pointers, not content. The notification says so explicitly: do
 not read the child transcript with shell tools — it overflows the parent context. Use
 `hc_subagent_control result` (or `/hc-subagents result <id>`) for the bounded result.
-Content is capped at 8 KiB and 200 lines, with a 4 KiB preview and a truncation footer
-pointing at `hc_subagent_control`.
+
+The preview is **handoff-first**: every child gets a delegation contract that asks it to
+end its final message with a `## Handoff` section — `### Status` (`done`,
+`done-with-caveats`, `blocked`, or `failed`), `### Changed`, `### Findings`, `### Next
+step` — and to keep the whole final message within ~1500 tokens (about 6 KiB), using only
+`(more in the session file)` and `(no files changed)` when it cannot be complete. The
+notification reproduces that section only, up to 4 KiB / 80 lines. When the child produced
+no handoff section the preview is its raw final message. Over-budget content is condensed
+by whole lines — fenced blocks become a one-line placeholder and the dropped middle is
+replaced by
+`[... report condensed for the caller: <n> lines dropped, <k> KiB withheld; full text in the session file ...]`
+— and the message ends with a truncation footer pointing at `hc_subagent_control`.
+
+The whole message is capped at 8 KiB and 200 lines. Background notifications are
+unaffected by `verbosity`: it selects the budget of a synchronous `hc_subagent` result and
+of `hc_subagent_control` `wait`/`result`, never of a notification.
 
 A notification may repeat for the same child. A follow-up settle after a `send` is a new
 result, not a duplicate of the first one.
@@ -423,7 +444,7 @@ See `bench/README.md` for metrics, caveats, and the Docker path.
 
 ```bash
 npm pack --dry-run            # inspect the published file list
-npm pack                     # produce pi-hc-subagents-0.2.0-rc.1.tgz
+npm pack                     # produce pi-hc-subagents-0.3.0.tgz
 npm test && npm run test:contract && npm run test:integration
 ```
 
