@@ -9,6 +9,7 @@ import {
   substitutePrevious,
   type BatchTaskResult,
 } from "../../src/tools/batch.ts";
+import { PREVIOUS_TASK_MAX_BYTES } from "../../src/runtime/result-format.ts";
 
 function task(agent = "scout", text = "look") {
   return { agent, task: text };
@@ -41,7 +42,7 @@ test("{previous} is replaced with the bounded previous result", () => {
   assert.equal(substitutePrevious("Summarize {previous}", "the answer"), "Summarize the answer");
   assert.equal(substitutePrevious("no placeholder", "ignored"), "no placeholder");
   const bounded = substitutePrevious("{previous}", "x".repeat(200_000));
-  assert.ok(Buffer.byteLength(bounded, "utf8") <= 50 * 1024 + 100);
+  assert.ok(Buffer.byteLength(bounded, "utf8") <= PREVIOUS_TASK_MAX_BYTES + 100);
   assert.match(bounded, /truncated/);
 });
 

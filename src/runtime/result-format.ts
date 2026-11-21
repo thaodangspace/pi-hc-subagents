@@ -7,9 +7,23 @@
 import { stripControlCharacters } from "../core/jsonl.ts";
 import type { SubagentState, TurnOutcome, Usage } from "./types.ts";
 
-export const MODEL_CONTENT_MAX_BYTES = 50 * 1024;
-export const MODEL_CONTENT_MAX_LINES = 2000;
+/** Default model-facing result budget: handoff-first, ~2k tokens. */
+export const RESULT_CONTENT_MAX_BYTES = 8 * 1024;
+export const RESULT_CONTENT_MAX_LINES = 200;
+/** Ceiling for `verbosity: "full"`; content is never unbounded. */
+export const FULL_CONTENT_MAX_BYTES = 50 * 1024;
+export const FULL_CONTENT_MAX_LINES = 2000;
+/** Chain `{previous}` keeps its own budget so result tuning cannot shrink it. */
+export const PREVIOUS_TASK_MAX_BYTES = 50 * 1024;
 export const DETAILS_TEXT_MAX_BYTES = 50 * 1024;
+
+/** @deprecated One-release aliases; import the result/full constants instead. */
+export const MODEL_CONTENT_MAX_BYTES = RESULT_CONTENT_MAX_BYTES;
+/** @deprecated One-release aliases; import the result/full constants instead. */
+export const MODEL_CONTENT_MAX_LINES = RESULT_CONTENT_MAX_LINES;
+
+/** Delivery detail the caller asked for: `summary` (default) or `full`. */
+export type ResultVerbosity = "summary" | "full";
 
 export interface SubagentResultDetails {
   childId: string;
@@ -163,8 +177,8 @@ export function truncateForModel(
   text: string,
   options: { maxBytes?: number; maxLines?: number; marker?: string } = {},
 ): TruncatedContent {
-  const maxBytes = options.maxBytes ?? MODEL_CONTENT_MAX_BYTES;
-  const maxLines = options.maxLines ?? MODEL_CONTENT_MAX_LINES;
+  const maxBytes = options.maxBytes ?? RESULT_CONTENT_MAX_BYTES;
+  const maxLines = options.maxLines ?? RESULT_CONTENT_MAX_LINES;
   const marker = options.marker ?? "\n\n[... output truncated ...]\n\n";
   const lines = text.split("\n");
   const byteLength = Buffer.byteLength(text, "utf8");
@@ -196,6 +210,287 @@ export function truncateForModel(
       .subarray(Math.max(headBytes, buffer.length - tailBytes))
       .toString("utf8")}`,
     truncated: true,
+  };
+}
+
+function byteLength(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+/**
+ * Cut text to `maxBytes` at a character boundary and mark the cut with `…`.
+ * The only place a line may be split; it never emits a partial multi-byte
+ * character or a replacement character.
+ */
+function cutToBytes(text: string, maxBytes: number, ellipsis = "…"): string {
+  if (maxBytes <= 0) return "";
+  if (byteLength(text) <= maxBytes) return text;
+  const ellipsisBytes = byteLength(ellipsis);
+  if (maxBytes < ellipsisBytes) return "";
+  const budget = maxBytes - ellipsisBytes;
+  let used = 0;
+  let head = "";
+  for (const char of text) {
+    const size = byteLength(char);
+    if (used + size > budget) break;
+    head += char;
+    used += size;
+  }
+  return `${head}${ellipsis}`;
+}
+
+const HANDOFF_HEADING = /^(#{1,3})[ \t]*(handoff|summary)[ \t]*:?[ \t]*$/i;
+const ATX_HEADING = /^(#{1,6})(?:[ \t]|$)/;
+const FENCE_MARK = /^[ \t]*(`{3,}|~{3,})/;
+
+interface FenceMark {
+  char: string;
+  length: number;
+}
+
+function fenceMark(line: string): FenceMark | null {
+  const run = FENCE_MARK.exec(line)?.[1];
+  if (!run) return null;
+  return { char: run.charAt(0), length: run.length };
+}
+
+/**
+ * Last non-empty `## Handoff` / `## Summary` section, code fences excluded.
+ *
+ * Headings inside a fenced block are ignored, a fence closes only on the same
+ * fence character with at least the opening length, and the section ends at the
+ * next heading of the same or a higher level (or end of text). The last match
+ * wins; an empty body means no handoff. Returns the trimmed body.
+ */
+export function extractHandoff(text: string): string | null {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  let fence: FenceMark | null = null;
+  let current: { level: number; body: string[] } | null = null;
+  let winner: string | null = null;
+
+  const finish = (): void => {
+    if (!current) return;
+    const body = current.body.join("\n").trim();
+    winner = body.length > 0 ? body : null;
+    current = null;
+  };
+
+  for (const line of lines) {
+    const mark = fenceMark(line);
+    if (fence) {
+      if (mark && mark.char === fence.char && mark.length >= fence.length) fence = null;
+      current?.body.push(line);
+      continue;
+    }
+    if (mark) {
+      fence = mark;
+      current?.body.push(line);
+      continue;
+    }
+    const handoff = HANDOFF_HEADING.exec(line);
+    if (handoff) {
+      finish();
+      current = { level: handoff[1]?.length ?? 0, body: [] };
+      continue;
+    }
+    const heading = ATX_HEADING.exec(line);
+    if (current && heading && (heading[1]?.length ?? 0) <= current.level) {
+      finish();
+      continue;
+    }
+    current?.body.push(line);
+  }
+  finish();
+  return winner;
+}
+
+export interface CondenseOptions {
+  maxBytes: number;
+  maxLines: number;
+}
+
+export interface CondensedText {
+  text: string;
+  /** Whole lines dropped from the middle (fenced blocks are counted separately). */
+  droppedLines: number;
+  /** Fenced blocks replaced by a one-line placeholder. */
+  droppedCodeBlocks: number;
+}
+
+function codeBlockPlaceholder(lines: number): string {
+  return `[code block removed: ${lines} lines]`;
+}
+
+/** Budgeted marker; `n` lines were dropped and `k` KiB withheld. */
+function condenseMarker(droppedLines: number, withheldKib: number): string {
+  return `[... report condensed for the caller: ${droppedLines} lines dropped, ${withheldKib} KiB withheld; full text in the session file ...]`;
+}
+
+/** Replace each fenced block with a one-line placeholder carrying its size. */
+function replaceCodeBlocks(lines: readonly string[]): { lines: string[]; codeBlocks: number } {
+  const out: string[] = [];
+  let codeBlocks = 0;
+  let index = 0;
+  while (index < lines.length) {
+    const open = fenceMark(lines[index] ?? "");
+    if (!open) {
+      out.push(lines[index] ?? "");
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    let inner = 0;
+    while (end < lines.length) {
+      const close = fenceMark(lines[end] ?? "");
+      if (close && close.char === open.char && close.length >= open.length) break;
+      inner += 1;
+      end += 1;
+    }
+    out.push(codeBlockPlaceholder(inner));
+    codeBlocks += 1;
+    index = end < lines.length ? end + 1 : end;
+  }
+  return { lines: out, codeBlocks };
+}
+
+/**
+ * Whole-line, code-block-aware reduction with a budgeted marker.
+ *
+ * Text that already fits is returned untouched. Otherwise fenced blocks become
+ * `[code block removed: N lines]`, whole head lines are kept within ~60% of the
+ * remaining content budget, whole tail lines fill the rest, the middle is
+ * dropped, and the marker is appended. A single line larger than the content
+ * budget is cut at a character boundary with `…` — the only allowed split.
+ * The result never exceeds `maxBytes` or `maxLines`.
+ */
+export function condenseByLines(text: string, options: CondenseOptions): CondensedText {
+  const maxBytes = Math.max(0, Math.trunc(options.maxBytes));
+  const maxLines = Math.max(1, Math.trunc(options.maxLines));
+  const normalized = text.replace(/\r\n?/g, "\n");
+  const sourceLines = normalized.split("\n");
+  const sourceBytes = byteLength(normalized);
+  if (sourceBytes <= maxBytes && sourceLines.length <= maxLines) {
+    return { text, droppedLines: 0, droppedCodeBlocks: 0 };
+  }
+
+  const replaced = replaceCodeBlocks(sourceLines);
+  const lines = replaced.lines;
+  if (byteLength(lines.join("\n")) <= maxBytes && lines.length <= maxLines) {
+    return { text: lines.join("\n"), droppedLines: 0, droppedCodeBlocks: replaced.codeBlocks };
+  }
+
+  // Size the marker with the widest numbers it could carry, so it always fits.
+  const markerUpperBound = condenseMarker(lines.length, Math.max(1, Math.ceil(sourceBytes / 1024)));
+  const markerBytes = byteLength(markerUpperBound);
+  const bodyBudget = maxBytes - markerBytes - 1;
+  if (bodyBudget <= 0) {
+    return {
+      text: cutToBytes(markerUpperBound, maxBytes),
+      droppedLines: lines.length,
+      droppedCodeBlocks: replaced.codeBlocks,
+    };
+  }
+
+  const headBudget = Math.floor(bodyBudget * 0.6);
+  const head: string[] = [];
+  let headBytes = 0;
+  let giant: string | null = null;
+  for (const line of lines) {
+    if (head.length >= Math.max(1, maxLines - 1)) break;
+    const add = byteLength(line) + (head.length > 0 ? 1 : 0);
+    if (headBytes + add <= headBudget) {
+      head.push(line);
+      headBytes += add;
+      continue;
+    }
+    if (head.length === 0) {
+      if (add <= bodyBudget) {
+        head.push(line);
+        headBytes = add;
+      } else {
+        giant = line;
+      }
+    }
+    break;
+  }
+
+  if (giant !== null) {
+    const cut = cutToBytes(giant, bodyBudget);
+    const withheldKib = Math.max(1, Math.ceil((sourceBytes - byteLength(cut)) / 1024));
+    const marker = condenseMarker(lines.length - 1, withheldKib);
+    return {
+      text: `${cut}\n${marker}`,
+      droppedLines: lines.length - 1,
+      droppedCodeBlocks: replaced.codeBlocks,
+    };
+  }
+
+  // `headBytes` + `tailBytes` + 1 newline per part boundary + marker bytes.
+  const tailBudget = Math.max(0, maxBytes - headBytes - markerBytes - (head.length > 0 ? 2 : 1));
+  const tailCap = Math.max(0, maxLines - head.length - 1);
+  const tail: string[] = [];
+  let tailBytes = 0;
+  for (let index = lines.length - 1; index >= head.length && tail.length < tailCap; index -= 1) {
+    const line = lines[index] ?? "";
+    const add = byteLength(line) + (tail.length > 0 ? 1 : 0);
+    if (tailBytes + add > tailBudget) break;
+    tail.unshift(line);
+    tailBytes += add;
+  }
+
+  const droppedLines = lines.length - head.length - tail.length;
+  const keptSourceBytes = [...head, ...tail].reduce((total, line) => total + byteLength(line), 0);
+  const withheldKib = Math.max(1, Math.ceil((sourceBytes - keptSourceBytes) / 1024));
+  const marker = condenseMarker(droppedLines, withheldKib);
+  const parts = [...head, ...tail, marker];
+  let dropped = droppedLines;
+  // Defensive: the budgets above already guarantee this, but never overshoot.
+  while (parts.length > 1 && byteLength(parts.join("\n")) > maxBytes) {
+    parts.splice(parts.length - 2, 1);
+    dropped += 1;
+  }
+  return { text: parts.join("\n"), droppedLines: dropped, droppedCodeBlocks: replaced.codeBlocks };
+}
+
+export interface ModelFacingOptions {
+  /** `summary` (default) uses the result budget; `full` uses the full ceiling. */
+  verbosity?: ResultVerbosity;
+  maxBytes?: number;
+  maxLines?: number;
+}
+
+export interface ModelFacingResult {
+  text: string;
+  /** True when a `## Handoff` / `## Summary` section was used. */
+  handoff: boolean;
+  /** True when the content had to be reduced to fit the budget. */
+  condensed: boolean;
+  /** Bytes of the source child text the caller did not receive. */
+  withheldBytes: number;
+}
+
+/**
+ * The single content boundary: extract the handoff, select the region, and
+ * condense inside that region only.
+ *
+ * Discarded log text is never re-admitted, so a verbose handoff degrades into a
+ * coherent digest instead of falling back to the raw message.
+ */
+export function modelFacingResult(text: string, options: ModelFacingOptions = {}): ModelFacingResult {
+  const verbosity = options.verbosity ?? "summary";
+  const maxBytes =
+    options.maxBytes ?? (verbosity === "full" ? FULL_CONTENT_MAX_BYTES : RESULT_CONTENT_MAX_BYTES);
+  const maxLines =
+    options.maxLines ?? (verbosity === "full" ? FULL_CONTENT_MAX_LINES : RESULT_CONTENT_MAX_LINES);
+  const handoff = extractHandoff(text);
+  const selected = handoff ?? text.replace(/\r\n?/g, "\n");
+  const fits = byteLength(selected) <= maxBytes && selected.split("\n").length <= maxLines;
+  const result = fits ? selected : condenseByLines(selected, { maxBytes, maxLines }).text;
+  return {
+    text: result,
+    handoff: handoff !== null,
+    condensed: !fits,
+    withheldBytes: Math.max(0, byteLength(text) - byteLength(result)),
   };
 }
 

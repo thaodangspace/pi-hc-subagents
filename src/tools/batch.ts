@@ -12,8 +12,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 
 import {
-  MODEL_CONTENT_MAX_BYTES,
-  MODEL_CONTENT_MAX_LINES,
+  FULL_CONTENT_MAX_LINES,
+  PREVIOUS_TASK_MAX_BYTES,
   formatDuration,
   type SubagentResultDetails,
   truncateForModel,
@@ -106,8 +106,8 @@ export function resolveSpawnMode(params: Record<string, unknown>): ModeResolutio
 export function substitutePrevious(task: string, previous: string): string {
   if (!task.includes("{previous}")) return task;
   const bounded = truncateForModel(previous, {
-    maxBytes: MODEL_CONTENT_MAX_BYTES,
-    maxLines: MODEL_CONTENT_MAX_LINES,
+    maxBytes: PREVIOUS_TASK_MAX_BYTES,
+    maxLines: FULL_CONTENT_MAX_LINES,
   });
   return task.split("{previous}").join(bounded.text);
 }
