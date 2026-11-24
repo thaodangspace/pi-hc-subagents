@@ -221,6 +221,23 @@ projects only). Environment overrides use the `PI_HC_SUBAGENTS_*` prefix.
 
 Run `/hc-subagents config` to print the effective configuration and agent directories.
 
+### Herdr app adoption labels
+
+The Herdr app adopts any terminal carrying the `herdr.space`/`herdr.tab` labels into a
+space of that id (an id it does not know becomes a new, unnamed space named after the
+terminal's folder). Those labels are **off by default**: a child already shows under its
+parent's tab in the agents list, and a pane per child is a choice.
+
+| Env | Effect |
+|---|---|
+| `PI_HC_HERDR=1` | label every child `herdr.space=pi-hc`, `herdr.tab=<run id>` (one tab per run) |
+| `PI_HC_HERDR_SPACE` | the space to join (default `pi-hc`); setting it turns the labels on |
+| `PI_HC_HERDR_TAB` | pin one tab instead of the run id |
+| `PI_HC_HERDR=0` | keep the labels off even when a space is set |
+
+hc never interprets a label, so an install without the app keeps them as plain data, and
+the labels the extension itself filters on (`pi-hc-run|child|parent|agent`) are unchanged.
+
 Relevant keys: `defaultMode`, `notify`, `retentionDays`, `killOnTimeout`,
 `monitorAfterReturn`, `intertool.exposeService`, `intertool.emitEvents`,
 `intertool.includeTaskPreview`, `ui.status`, `hc.socketPath`, `hc.parentTerminal`, and the

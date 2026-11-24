@@ -173,6 +173,33 @@ function resolveModel(value: string | null | undefined): string | null {
   return trimmed;
 }
 
+/**
+ * The Herdr app's adoption labels, opt-in.
+ *
+ * A terminal carrying `herdr.space`/`herdr.tab` shows up in the Herdr app as a
+ * pane in that space; an id the app does not know becomes a new, unnamed space
+ * (named after the terminal's folder) or a new tab. hc never interprets a
+ * label, so an install without the app keeps them as plain data.
+ *
+ * Off by default: a child already shows under its parent's tab in the agents
+ * list, and a pane per child is a choice, not a default. `PI_HC_HERDR=1` (or a
+ * space) turns them on, `PI_HC_HERDR_TAB` pins a tab (default: the run id, so
+ * one run's children share a tab), and `PI_HC_HERDR=0` keeps them off even when
+ * a space is set.
+ */
+export function herdrLabels(env: NodeJS.ProcessEnv, runId: string): Record<string, string> {
+  const flag = (env["PI_HC_HERDR"] ?? "").trim().toLowerCase();
+  if (flag === "0" || flag === "false" || flag === "off") return {};
+  const space = (env["PI_HC_HERDR_SPACE"] ?? "").trim();
+  const on = flag === "1" || flag === "true" || flag === "on" || space.length > 0;
+  if (!on) return {};
+  const tab = (env["PI_HC_HERDR_TAB"] ?? "").trim();
+  return {
+    "herdr.space": space.length > 0 ? space : "pi-hc",
+    "herdr.tab": tab.length > 0 ? tab : runId,
+  };
+}
+
 export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
   const env = input.env ?? process.env;
   if (!isRecord(input.agent)) throw new HcSubagentError("validation", "agent definition is missing");
@@ -260,6 +287,7 @@ export function buildSpawnPlan(input: BuildSpawnPlanInput): SpawnPlan {
     "pi-hc-child": input.paths.childId,
     "pi-hc-parent": input.parentSessionId,
     "pi-hc-agent": input.paths.agentSlug,
+    ...herdrLabels(env, input.paths.runId),
   };
 
   return {
