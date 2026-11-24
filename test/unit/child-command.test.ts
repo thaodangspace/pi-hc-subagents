@@ -194,6 +194,52 @@ test("argv order is exact and @task.md is last", async () => {
   }
 });
 
+test("Herdr adoption labels are opt-in, and default to one tab per run", async () => {
+  const cwd = await scratchCwd("hc plan herdr");
+  try {
+    const paths = pathsFor();
+    const base = {
+      agent: reviewerAgent(),
+      task: "Review src/index.ts",
+      cwd,
+      paths,
+      parentTerminalId: "t3",
+      parentSessionId: "parent-session",
+      trust: { projectTrusted: true, parentCwd: cwd },
+      piInvocation: ["/opt/pi/bin/pi"],
+    };
+
+    // Default: no Herdr labels at all — a child already shows under its parent.
+    const off = buildSpawnPlan({ ...base, env: { PATH: "/bin" } });
+    assert.equal(off.labels["herdr.space"], undefined);
+    assert.equal(off.labels["herdr.tab"], undefined);
+
+    const on = buildSpawnPlan({ ...base, env: { PATH: "/bin", PI_HC_HERDR: "1" } });
+    assert.equal(on.labels["herdr.space"], "pi-hc");
+    assert.equal(on.labels["herdr.tab"], paths.runId);
+    // The labels the extension itself filters on are unchanged.
+    assert.equal(on.labels["pi-hc-run"], paths.runId);
+
+    // A space turns them on too; the tab can be pinned.
+    const pinned = buildSpawnPlan({
+      ...base,
+      env: { PATH: "/bin", PI_HC_HERDR_SPACE: "agents", PI_HC_HERDR_TAB: "nightly" },
+    });
+    assert.equal(pinned.labels["herdr.space"], "agents");
+    assert.equal(pinned.labels["herdr.tab"], "nightly");
+
+    // An explicit off wins over a space.
+    const disabled = buildSpawnPlan({
+      ...base,
+      env: { PATH: "/bin", PI_HC_HERDR: "0", PI_HC_HERDR_SPACE: "agents" },
+    });
+    assert.equal(disabled.labels["herdr.space"], undefined);
+    assert.equal(disabled.labels["herdr.tab"], undefined);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("read-only agents without tools receive an explicit safe allowlist", async () => {
   const cwd = await scratchCwd();
   try {
