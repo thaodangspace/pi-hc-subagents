@@ -2,7 +2,9 @@
  * Parent lifecycle: owned-child cleanup and terminal policy.
  *
  * A parent quit kills every child it started. Transient core disconnects never
- * kill a child. Cleanup after a terminal turn follows `cleanup: keep|remove`.
+ * kill a child. Cleanup after a terminal turn follows `cleanup: keep|remove`;
+ * `sweepFinishedTerminals` also removes the killed terminals on shutdown, so a
+ * session that ends does not leave `finished` terminals behind forever.
  */
 import path from "node:path";
 
@@ -53,13 +55,22 @@ export async function shutdownOwnedChildren(session: ToolSession): Promise<Shutd
         if (normalized.code === "not_found" || normalized.code === "finished") return;
         failed.push({ terminal: record.terminal, error: normalized.message });
       }
-      if (session.runtime.config.cleanup === "remove") {
+      if (shouldRemoveOnShutdown(session, record)) {
         await session.runtime.core.remove(record.terminal).catch(() => {});
       }
     }),
   );
 
   return { killed, failed };
+}
+
+/**
+ * Shutdown removes a terminal when `cleanup: "remove"` asks for it or when the
+ * start-up sweep is enabled: nothing is left to inspect once the parent session
+ * is gone, and `terminal.kill` has already made the child dead.
+ */
+function shouldRemoveOnShutdown(session: ToolSession, record: SubagentRecord): boolean {
+  return session.runtime.config.cleanup === "remove" || session.runtime.config.sweepFinishedTerminals;
 }
 
 export interface CleanupOptions {

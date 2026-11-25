@@ -888,7 +888,7 @@ await core.run({
 - When the parent runs outside hc without an anchor, pass `caller: null`, omit `parent`, and
   set `no_parent: true`; children are root terminals. The extension still kills them on
   `session_shutdown`; a SIGKILLed parent leaves them for manual/retention cleanup.
-- `rm: false` by default: keep the terminal for inspection. Cleanup policy may remove finished terminals after the result is collected.
+- `rm: false` by default: keep the terminal for inspection while the session lives. Cleanup policy may remove finished terminals after the result is collected, and `sweepFinishedTerminals` removes the session's own killed terminals on shutdown and its finished leftovers on `session_start`.
 - Do NOT use `outlive_parent` by default.
 - Do NOT set `keep: true` by default. A kept terminal replaces a lost program with a shell, which is not a subagent.
 - Omit `size`/`display` initially; use core defaults. A future config MAY pass parent dimensions.
@@ -1231,9 +1231,17 @@ Poll `terminal.get` every `pollIntervalMs` (default 750 ms; min 250 ms):
   4. Mark turn `cancelled`/`aborted`; return partial result if available.
 - `hc_subagent_control({ action: "interrupt" })` only interrupts; does not kill.
 - `hc_subagent_control({ action: "kill" })` kills and removes the terminal; marks `cancelled`.
-- On `session_shutdown` (quit/new/resume/reload): kill all children started by this session. Do not wait for graceful turns.
+- On `session_shutdown` (quit/new/resume/reload): kill all children started by this session. Do not wait for graceful turns. With `sweepFinishedTerminals` (default true) or `cleanup: "remove"`, `terminal.rm` each killed terminal; only `sweepFinishedTerminals: false` + `cleanup: "keep"` leaves them in the core.
 - Do not kill children on a transient core disconnect or `unavailable` error.
-- `cleanup: "keep"`: leave the terminal and run directory for inspection.
+- `cleanup: "keep"`: leave the terminal and run directory for inspection while the session lives.
+- `sweepFinishedTerminals` (default true): at `session_start`, `terminal.list` filtered by
+  `pi-hc-parent=<sessionId>` with `all: true`, then `terminal.rm` for `finished` terminals
+  that no unfinished record owns (oldest `finished_ms` first, at most 50). Bounded and
+  best effort: a core error or an old core changes nothing. Together with the shutdown
+  removal it keeps a session (and a resumed one) from accumulating killed terminals.
+  `live` terminals are never removed, so a child orphaned by a SIGKILLed parent stays
+  live until it exits or is killed manually.
+- Retention (`retentionDays`) only deletes run directories; it never removes terminals.
 - `cleanup: "remove"`: after a terminal turn's result has been delivered/collected, `kill`
   (if still live) and `rm` the terminal; keep the run directory/session per retention.
   Never remove a `starting`/`working`/`blocked` child automatically.
@@ -1705,6 +1713,7 @@ Default file contents:
   "agentScope": "user",               // "user" | "project" | "both"
   "parallelWrites": false,
   "cleanup": "keep",                  // terminal cleanup: "keep" | "remove"
+  "sweepFinishedTerminals": true,    // session start: rm this parent's own finished terminals
   "retentionDays": 14,                // run-dir/session retention; never deletes active runs
   "resultSummarizer": "off",         // "off" | "model"; sends report text to the parent model
   "excludeTools": ["hc_subagent", "hc_subagent_control"],
@@ -1733,6 +1742,7 @@ Env overrides (all optional):
 | `PI_HC_SUBAGENTS_STARTUP_TIMEOUT_MS` | `startupTimeoutMs` |
 | `PI_HC_SUBAGENTS_POLL_MS` | `pollIntervalMs` |
 | `PI_HC_SUBAGENTS_WAKE_ON_SETTLE` | `wakeOnSettle` (`1`/`true`/`0`/`false`; anything else warns and keeps the default) |
+| `PI_HC_SUBAGENTS_SWEEP_FINISHED_TERMINALS` | `sweepFinishedTerminals` (`1`/`true`/`0`/`false`; anything else warns and keeps the default) |
 | `PI_HC_SUBAGENTS_AGENT_SCOPE` | `agentScope` |
 | `PI_HC_SUBAGENTS_RESULT_SUMMARIZER` | `resultSummarizer` (`off`/`model`; anything else warns and keeps the lower-precedence value) |
 | `PI_HC_SUBAGENTS_SOCKET` | `hc.socketPath` (absolute; external parent) |
@@ -1746,6 +1756,9 @@ Env overrides (all optional):
 - `agentScope: "user"` is safe by default; project agents require opt-in.
 - `parallelWrites: false` prevents cwd races.
 - `cleanup: "keep"` keeps terminals/sessions for inspection; users can remove.
+- `sweepFinishedTerminals: true` removes only this parent's own finished terminals at
+  session start, so a resumed session does not accumulate dead terminals; `live`
+  terminals and terminals still owned by an unfinished record are never touched.
 - `notify: "async"` makes background work useful.
 - `ui.status: "detail"` names the only running child (or counts blocked children) in one
   bounded footer line; `count` keeps the legacy `N active`, `off` writes no status.

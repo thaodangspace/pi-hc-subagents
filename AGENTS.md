@@ -45,9 +45,10 @@ them at the developer's default core.
 | `src/runtime/result-format.ts` | The single model-facing content boundary: handoff extraction, whole-line condensation, the 8 KiB/50 KiB budgets, and the result envelope; `details` flags describe the content it rendered. |
 | `src/runtime/summarizer.ts` | Opt-in, gated single-shot report summarizer: the gates, 128 KiB in / 4 KiB out, the 10 s deadline, one call per settled turn, and stable fallback codes. No pi import, no network, no filesystem. |
 | `src/runtime/summarizer-gateway.ts` | pi-facing summarizer adapter: model, auth lookup, and `generate` are injected, so this module imports no pi code; a missing model/auth yields `null` plus one warning. |
+| `src/runtime/terminal-sweep.ts` | Removal of this parent's own finished hc terminals at `session_start`: `pi-hc-parent` label filter, finished-only, unfinished-record protection, bounded batch, contained errors. `lifecycle.ts` removes the same terminals on shutdown. |
 | `test/unit` | Pure modules, fakes, security checks. |
 | `test/contract` | Pinned `hc schema` contract and minimum-version guard. |
-| `test/integration` | Isolated real `hc` cores with fake or real children. |
+| `test/integration` | Isolated real `hc` cores with fake or real children; the harness stops cores on exit/interrupt and prunes abandoned `hcit-*` roots. |
 | `bench/**` | Opt-in delegation benchmark: arms, fixtures, metrics, report, Docker image. |
 
 ## Invariants
@@ -123,6 +124,7 @@ them at the developer's default core.
 |---|---|
 | New hc method/wire param | `src/core/core-client.ts`, `src/core/hc-types.ts`, `test/fixtures/hc-schema.json`, `test/contract/hc-schema.test.ts` |
 | New config key | `src/config/schema.ts`, `src/config/config.ts`, `test/unit/config.test.ts`, README |
+| Start-up terminal sweep | `src/runtime/terminal-sweep.ts`, `index.ts`, `test/unit/terminal-sweep.test.ts`, `test/integration/lifecycle.test.ts`, SPEC §13.6 |
 | External parent connection | `src/config/schema.ts` (`hc`), `src/runtime/prerequisites.ts`, `src/core/core-client.ts`, `src/child/child-command.ts`, `test/integration/external-parent.test.ts` |
 | Child launch contract | `src/child/child-command.ts`, `test/unit/child-command.test.ts` |
 | New result shape/state | `src/runtime/types.ts`, `src/runtime/state-machine.ts`, `src/runtime/finalize.ts`, fixtures/tests |
@@ -143,7 +145,12 @@ them at the developer's default core.
   (parentless spawn, configured anchor, tool registration, and a fake-child tool run).
 - Pure modules (`core`, `session-parse`, `state-machine`) are fixture-tested.
 - Integration tests use `startIsolatedHc()` from `test/integration/harness.ts` and clean
-  up in `finally`.
+  up in `finally`. The harness is also a safety net: it stops every core it started on
+  `exit`/`SIGINT`/`SIGTERM`, and prunes `hcit-*` roots older than 30 minutes that no
+  in-process test still owns (`pruneOrphanedHcRoots`), so `npm run test:integration`
+  never leaves cores, holders, or temp dirs behind.
+- Do not use `hc server status` as a liveness probe: it starts a core when none is
+  running. Check the socket, the recorded pid, or a JSON-RPC call instead.
 - Fake children are driven by `PI_HC_SUBAGENTS_TEST_CHILD` and must not require network
   or model credentials. Live model tests are opt-in and skipped by default.
 - Never put real credentials or user task/result text into fixtures, labels, logs, or

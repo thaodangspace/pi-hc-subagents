@@ -174,22 +174,31 @@ test("waiting and armed reflect the live state across waits", async () => {
 });
 
 test("unref'd and ref'd timers both disarm on every exit path", async () => {
-  for (const unref of [true, false]) {
-    const gate = new WakeGate({ unref });
+  // An unref'd timer is by definition the only handle that could keep the loop
+  // alive, so the test runner may decide the test finished while `wait(10)` is
+  // still pending (node 22 exits with "Promise resolution is still pending").
+  // One ref'd handle makes the test deterministic on every supported node.
+  const keepAlive = setInterval(() => {}, 1_000);
+  try {
+    for (const unref of [true, false]) {
+      const gate = new WakeGate({ unref });
 
-    const timed = gate.wait(10);
-    assert.equal(await timed, "timer");
-    assert.equal(gate.armed, false);
+      const timed = gate.wait(10);
+      assert.equal(await timed, "timer");
+      assert.equal(gate.armed, false);
 
-    const woken = gate.wait(10_000);
-    gate.wake();
-    assert.equal(await woken, "wake");
-    assert.equal(gate.armed, false);
+      const woken = gate.wait(10_000);
+      gate.wake();
+      assert.equal(await woken, "wake");
+      assert.equal(gate.armed, false);
 
-    const aborted = gate.wait(10_000);
-    gate.abort();
-    assert.equal(await aborted, "abort");
-    assert.equal(gate.armed, false);
+      const aborted = gate.wait(10_000);
+      gate.abort();
+      assert.equal(await aborted, "abort");
+      assert.equal(gate.armed, false);
+    }
+  } finally {
+    clearInterval(keepAlive);
   }
   await tick(1);
 });

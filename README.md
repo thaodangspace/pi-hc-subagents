@@ -238,8 +238,8 @@ parent's tab in the agents list, and a pane per child is a choice.
 hc never interprets a label, so an install without the app keeps them as plain data, and
 the labels the extension itself filters on (`pi-hc-run|child|parent|agent`) are unchanged.
 
-Relevant keys: `defaultMode`, `notify`, `retentionDays`, `killOnTimeout`,
-`monitorAfterReturn`, `intertool.exposeService`, `intertool.emitEvents`,
+Relevant keys: `defaultMode`, `notify`, `retentionDays`, `sweepFinishedTerminals`,
+`killOnTimeout`, `monitorAfterReturn`, `intertool.exposeService`, `intertool.emitEvents`,
 `intertool.includeTaskPreview`, `ui.status`, `hc.socketPath`, `hc.parentTerminal`, and the
 existing concurrency, polling, and timeout values.
 
@@ -441,6 +441,21 @@ rejected.
 - Retention (`retentionDays`, default 14) deletes expired runs that are inactive and
   whose terminal is not live. `0` disables cleanup.
 
+## Terminal lifecycle
+
+`cleanup: "keep"` (default) leaves a settled child's terminal in hc so you can `attach`
+and inspect it; `"remove"` kills and removes it once the turn's result is delivered. On
+`session_shutdown` every child this session started is killed, and its terminal is
+removed, so quitting never leaves dead terminals behind.
+
+`sweepFinishedTerminals` (default `true`, env `PI_HC_SUBAGENTS_SWEEP_FINISHED_TERMINALS`)
+is the switch for that removal and for a second safety net at `session_start`: it lists
+terminals labeled `pi-hc-parent=<session id>` with `all: true` and `rm`s the `finished`
+ones, oldest first, at most 50, skipping any terminal an unfinished record still owns.
+`live` children, other sessions' children, and terminals of other tools are never
+touched. Set it to `false` to keep killed terminals for post-mortem inspection; then
+`hc rm <address>` is the manual path.
+
 ## Tests
 
 ```bash
@@ -449,6 +464,12 @@ npm run test:contract    # pinned hc schema contract
 npm run test:integration # isolated hc core; skipped when hc is unavailable
 npm run test:all
 ```
+
+Integration tests get a scratch `HC_SESSION` and scratch XDG paths, and the harness is a
+safety net: it stops every core it started on `exit`/`SIGINT`/`SIGTERM` and prunes
+abandoned `hcit-*` roots (older than 30 minutes, no longer owned by a running test
+process) at start-up. `npm run test:integration` therefore does not accumulate cores,
+holders, or `/tmp/hcit-*` directories.
 
 M3 coverage includes scheduler concurrency/write serialization, parallel partial
 failure, chain `{previous}` substitution and stop-on-failure, pipe framing/permissions/

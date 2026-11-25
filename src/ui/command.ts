@@ -113,6 +113,7 @@ export function registerHcSubagentsCommand(pi: ExtensionAPI, deps: CommandDeps):
           "wakeOnSettle": String(runtime.config.wakeOnSettle),
           "ui.status": runtime.config.ui.status,
           "retentionDays": String(runtime.config.retentionDays),
+          "sweepFinishedTerminals": String(runtime.config.sweepFinishedTerminals),
           "intertool.exposeService": String(runtime.config.intertool.exposeService),
         });
         const childIds =
