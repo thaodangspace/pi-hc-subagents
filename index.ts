@@ -21,6 +21,7 @@ import { Notifier } from "./src/runtime/notifier.ts";
 import { RunPersistence, mergeSummaries, type PersistenceEntry } from "./src/runtime/persistence.ts";
 import { loadSummariesFromRunDirs, reconcileRuns } from "./src/runtime/reconcile.ts";
 import { cleanupExpiredRuns } from "./src/runtime/retention.ts";
+import { sweepFinishedTerminals } from "./src/runtime/terminal-sweep.ts";
 import {
   IntertoolServiceV1,
   READY_EVENT,
@@ -283,6 +284,22 @@ export default function hcSubagentsExtension(pi: ExtensionAPI): void {
     refreshWidget();
 
     // Retention is best effort and never blocks tool use.
+    // Start-up housekeeping, both best effort and never blocking tool use:
+    // drop this parent's own finished terminals so a resumed session does not
+    // accumulate them, then expire old run directories.
+    if (runtime.config.sweepFinishedTerminals) {
+      await sweepFinishedTerminals({
+        core: runtime.core,
+        parentSessionId: runtime.parentSessionId,
+        // Only an unfinished record still owns its terminal; a settled one is
+        // restored from `result.json`/session JSONL, never from the screen.
+        protectedTerminals: session.registry
+          .listForParent(runtime.parentSessionId, { includeFinished: false })
+          .map((record) => record.terminal)
+          .filter((terminal) => terminal.length > 0),
+      }).catch(() => null);
+    }
+
     const retained = await cleanupExpiredRuns({
       runsRoot,
       retentionDays: runtime.config.retentionDays,

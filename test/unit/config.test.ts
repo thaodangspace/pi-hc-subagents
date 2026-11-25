@@ -32,6 +32,7 @@ test("defaults match the approved configuration", () => {
   assert.equal(DEFAULT_CONFIG.agentScope, "user");
   assert.equal(DEFAULT_CONFIG.parallelWrites, false);
   assert.equal(DEFAULT_CONFIG.cleanup, "keep");
+  assert.equal(DEFAULT_CONFIG.sweepFinishedTerminals, true);
   assert.equal(DEFAULT_CONFIG.retentionDays, 14);
   assert.equal(DEFAULT_CONFIG.wakeOnSettle, true);
   assert.deepEqual(DEFAULT_CONFIG.excludeTools, ["hc_subagent", "hc_subagent_control"]);
@@ -259,6 +260,39 @@ test("wakeOnSettle env override accepts 1/true/0/false and warns otherwise", () 
 
   // An empty value is not an override at all.
   assert.equal(envOverrides({ PI_HC_SUBAGENTS_WAKE_ON_SETTLE: "" }).value.wakeOnSettle, undefined);
+});
+
+test("sweepFinishedTerminals defaults to true and takes file and env overrides", () => {
+  assert.equal(DEFAULT_CONFIG.sweepFinishedTerminals, true);
+  assert.deepEqual(validateConfig({ sweepFinishedTerminals: false }, "global").value, {
+    sweepFinishedTerminals: false,
+  });
+
+  const invalid = validateConfig({ sweepFinishedTerminals: "off" }, "project");
+  assert.deepEqual(invalid.value, {});
+  assert.deepEqual(invalid.warnings.map((warning) => warning.field), ["sweepFinishedTerminals"]);
+
+  for (const [raw, expected] of [
+    ["1", true],
+    ["true", true],
+    ["0", false],
+    ["false", false],
+  ] as const) {
+    const parsed = envOverrides({ PI_HC_SUBAGENTS_SWEEP_FINISHED_TERMINALS: raw });
+    assert.deepEqual(parsed.warnings, [], `no warning for ${raw}`);
+    assert.equal(parsed.value.sweepFinishedTerminals, expected);
+  }
+
+  const invalidEnv = envOverrides({ PI_HC_SUBAGENTS_SWEEP_FINISHED_TERMINALS: "maybe" });
+  assert.equal(invalidEnv.value.sweepFinishedTerminals, undefined);
+  assert.equal(invalidEnv.warnings[0]?.field, "PI_HC_SUBAGENTS_SWEEP_FINISHED_TERMINALS");
+
+  // Both boolean env overrides are independent.
+  const both = envOverrides({
+    PI_HC_SUBAGENTS_WAKE_ON_SETTLE: "0",
+    PI_HC_SUBAGENTS_SWEEP_FINISHED_TERMINALS: "0",
+  });
+  assert.deepEqual(both.value, { wakeOnSettle: false, sweepFinishedTerminals: false });
 });
 
 test("wakeOnSettle loads from a project config layer", async () => {

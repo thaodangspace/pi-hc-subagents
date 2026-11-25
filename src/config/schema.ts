@@ -67,6 +67,8 @@ export interface HcSubagentsConfig {
   agentScope: AgentScope;
   parallelWrites: boolean;
   cleanup: CleanupPolicy;
+  /** Remove this parent's own finished terminals when a session starts. */
+  sweepFinishedTerminals: boolean;
   retentionDays: number;
   /** Wake waiters on the child's settled pipe notification; false is poll-only. */
   wakeOnSettle: boolean;
@@ -93,6 +95,7 @@ export const DEFAULT_CONFIG: Readonly<HcSubagentsConfig> = Object.freeze({
   agentScope: "user",
   parallelWrites: false,
   cleanup: "keep",
+  sweepFinishedTerminals: true,
   retentionDays: 14,
   wakeOnSettle: true,
   resultSummarizer: "off",
@@ -363,6 +366,7 @@ export function validateConfig(raw: unknown, source: ConfigSource): ValidationRe
   boolean("killOnTimeout");
   boolean("monitorAfterReturn");
   boolean("parallelWrites");
+  boolean("sweepFinishedTerminals");
   boolean("wakeOnSettle");
   enumeration("defaultMode", DEFAULT_MODES);
   enumeration("notify", NOTIFY_MODES);
@@ -410,6 +414,14 @@ const INTEGER_ENV_FIELDS: Array<{
   { env: "PI_HC_SUBAGENTS_POLL_MS", field: "pollIntervalMs", min: 250, max: 60_000 },
 ];
 
+const BOOLEAN_ENV_FIELDS: Array<{
+  env: string;
+  field: "wakeOnSettle" | "sweepFinishedTerminals";
+}> = [
+  { env: "PI_HC_SUBAGENTS_WAKE_ON_SETTLE", field: "wakeOnSettle" },
+  { env: "PI_HC_SUBAGENTS_SWEEP_FINISHED_TERMINALS", field: "sweepFinishedTerminals" },
+];
+
 /** Parse environment overrides. Only the documented variables are honored. */
 export function envOverrides(env: NodeJS.ProcessEnv): ValidationResult {
   const warnings: ConfigWarning[] = [];
@@ -431,16 +443,17 @@ export function envOverrides(env: NodeJS.ProcessEnv): ValidationResult {
     }
   }
 
-  const wakeOnSettle = env.PI_HC_SUBAGENTS_WAKE_ON_SETTLE;
-  if (wakeOnSettle !== undefined && wakeOnSettle !== "") {
-    if (wakeOnSettle === "1" || wakeOnSettle === "true") value.wakeOnSettle = true;
-    else if (wakeOnSettle === "0" || wakeOnSettle === "false") value.wakeOnSettle = false;
+  for (const { env: name, field } of BOOLEAN_ENV_FIELDS) {
+    const raw = env[name];
+    if (raw === undefined || raw === "") continue;
+    if (raw === "1" || raw === "true") value[field] = true;
+    else if (raw === "0" || raw === "false") value[field] = false;
     else {
       warnings.push({
         source: "env",
-        field: "PI_HC_SUBAGENTS_WAKE_ON_SETTLE",
+        field: name,
         message: "expected 1, true, 0, or false",
-        value: wakeOnSettle,
+        value: raw,
       });
     }
   }

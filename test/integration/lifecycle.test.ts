@@ -13,6 +13,7 @@ import { Registry } from "../../src/runtime/registry.ts";
 import { cancelRecord } from "../../src/runtime/run-ops.ts";
 import { Scheduler } from "../../src/runtime/scheduler.ts";
 import { SettleHintHub } from "../../src/runtime/settle-hints.ts";
+import { sweepFinishedTerminals } from "../../src/runtime/terminal-sweep.ts";
 import { createRuntime } from "../../src/runtime/runtime.ts";
 import type { ToolSession } from "../../src/tools/session.ts";
 import { hcAvailable, startIsolatedHc } from "./harness.ts";
@@ -35,11 +36,15 @@ function agent(): AgentDefinition {
 async function createSession(
   isolated: Awaited<ReturnType<typeof startIsolatedHc>>,
   parentSessionId = "it-lifecycle-parent",
-  options: { mode?: string; settleHints?: SettleHintHub } = {},
+  options: { mode?: string; settleHints?: SettleHintHub; config?: Record<string, unknown> } = {},
 ): Promise<ToolSession> {
   const agentDir = path.join(isolated.root, "agent");
   await mkdir(agentDir, { recursive: true });
-  await writeFile(path.join(agentDir, "hc-subagents.json"), JSON.stringify({ pollIntervalMs: 250 }), "utf8");
+  await writeFile(
+    path.join(agentDir, "hc-subagents.json"),
+    JSON.stringify({ pollIntervalMs: 250, ...options.config }),
+    "utf8",
+  );
   const runtime = await createRuntime({
     cwd: isolated.root,
     trusted: true,
@@ -111,20 +116,36 @@ test("session shutdown kills all owned children", { skip: !available }, async ()
     const result = await shutdownOwnedChildren(session);
     assert.deepEqual(result.failed, []);
     assert.equal(result.killed.length, 2);
-    assert.equal((await waitForFinished(isolated, first.terminal)).state, "finished");
-    assert.equal((await waitForFinished(isolated, second.terminal)).state, "finished");
     assert.equal(session.registry.get(first.childId)?.state, "cancelled");
 
-    const listing = await isolated.hc(["ls", "--all", "--json"]);
-    const parsed = JSON.parse(listing.stdout || "{}") as { terminals?: Array<{ address: string; state: string }> };
-    const liveOwned = (parsed.terminals ?? []).filter(
-      (terminal) => terminal.address === first.terminal || terminal.address === second.terminal,
-    );
-    assert.ok(liveOwned.every((terminal) => terminal.state === "finished"));
+    // Default `sweepFinishedTerminals`: shutdown also removes what it killed,
+    // so a finished session leaves no terminal behind.
+    assert.equal(await isolated.core.tryGet(first.terminal), null);
+    assert.equal(await isolated.core.tryGet(second.terminal), null);
   } finally {
     await isolated.cleanup();
   }
 });
+
+test(
+  "shutdown keeps killed terminals when sweepFinishedTerminals is off",
+  { skip: !available },
+  async () => {
+    const isolated = await startIsolatedHc();
+    try {
+      const session = await createSession(isolated, "it-lifecycle-keep", {
+        config: { sweepFinishedTerminals: false },
+      });
+      const child = await spawnSilentChild(session, "a");
+      const result = await shutdownOwnedChildren(session);
+      assert.deepEqual(result.failed, []);
+      assert.equal((await waitForFinished(isolated, child.terminal)).state, "finished");
+      assert.equal((await isolated.core.tryGet(child.terminal))?.state, "finished");
+    } finally {
+      await isolated.cleanup();
+    }
+  },
+);
 
 test("a child ends when its hc parent ends", { skip: !available }, async () => {
   const isolated = await startIsolatedHc();
@@ -158,6 +179,41 @@ test("shutdown never touches another parent session's records", { skip: !availab
     const theirTerminal = await isolated.core.get(theirs.terminal);
     assert.equal(theirTerminal.state, "live");
     await isolated.core.kill(theirs.terminal);
+  } finally {
+    await isolated.cleanup();
+  }
+});
+
+test("the start-up sweep removes only this parent's finished terminals", { skip: !available }, async () => {
+  const isolated = await startIsolatedHc();
+  try {
+    const session = await createSession(isolated, "it-sweep-mine");
+    const other = await createSession(isolated, "it-sweep-theirs");
+    const mine = await spawnSilentChild(session, "7");
+    const theirs = await spawnSilentChild(other, "8");
+
+    // A terminal still owned by an unfinished record is protected even when
+    // hc already reports it finished.
+    const protectedTerminal = await spawnSilentChild(session, "9");
+
+    // Every child ends without a shutdown, so all three terminals are
+    // `finished` and only ownership decides what the sweep may remove.
+    for (const address of [mine.terminal, theirs.terminal, protectedTerminal.terminal]) {
+      await isolated.core.kill(address);
+      assert.equal((await waitForFinished(isolated, address)).state, "finished");
+    }
+
+    const result = await sweepFinishedTerminals({
+      core: isolated.core,
+      parentSessionId: session.runtime.parentSessionId,
+      protectedTerminals: [protectedTerminal.terminal],
+    });
+
+    assert.deepEqual(result.removed, [mine.terminal]);
+    assert.deepEqual(result.failed, []);
+    assert.equal(await isolated.core.tryGet(mine.terminal), null);
+    assert.equal((await isolated.core.tryGet(protectedTerminal.terminal))?.state, "finished");
+    assert.equal((await isolated.core.get(theirs.terminal)).state, "finished");
   } finally {
     await isolated.cleanup();
   }

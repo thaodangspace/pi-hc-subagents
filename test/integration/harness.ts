@@ -3,10 +3,18 @@
  *
  * Every test gets its own HC_SESSION and scratch XDG paths. Cleanup stops the
  * core, which ends its terminals. The developer's core is never touched.
+ *
+ * Two safety nets keep a killed test run from leaking cores (each leaked core
+ * keeps a holder process and a few MB of RAM forever):
+ * - every started core is stopped synchronously on `exit`, `SIGINT`, and
+ *   `SIGTERM`;
+ * - `startIsolatedHc` prunes `hcit-*` roots that outlived their test process
+ *   (no longer active here and older than `ORPHAN_MIN_AGE_MS`), stopping the
+ *   core that still owns them before removing the directory.
  */
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -41,6 +49,149 @@ export async function hcAvailable(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * A root must be abandoned for this long before the harness dares to remove it,
+ * so a slow test file can never lose the core another file is still using.
+ */
+export const ORPHAN_MIN_AGE_MS = 30 * 60 * 1000;
+
+/** Roots this process still owns; never pruned. */
+const activeCores = new Set<{ root: string; env: NodeJS.ProcessEnv }>();
+let exitHookInstalled = false;
+
+function stopCoreSync(env: NodeJS.ProcessEnv): void {
+  spawnSync("hc", ["server", "stop", "--json"], { env, timeout: 5000, stdio: "ignore" });
+}
+
+function stopActiveCoresSync(): void {
+  for (const core of activeCores) stopCoreSync(core.env);
+  activeCores.clear();
+}
+
+function installExitHook(): void {
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  // `exit` is synchronous only: stop each core with a blocking CLI call instead
+  // of awaiting, so a plain process exit or a failed assertion cannot leak.
+  process.on("exit", stopActiveCoresSync);
+  for (const [signal, code] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ] as const) {
+    process.on(signal, () => {
+      stopActiveCoresSync();
+      process.exit(code);
+    });
+  }
+}
+
+/** Whether an `hcit-*` root is abandoned and safe to remove. */
+export function isOrphanRoot(
+  candidate: { root: string; mtimeMs: number },
+  options: { activeRoots: Iterable<string>; minAgeMs: number; now: number },
+): boolean {
+  if (new Set(options.activeRoots).has(candidate.root)) return false;
+  return options.now - candidate.mtimeMs >= options.minAgeMs;
+}
+
+export interface OrphanPruneOptions {
+  /** Directory holding `hcit-*` roots; defaults to the harness tmp dir. */
+  tmpdir?: string;
+  minAgeMs?: number;
+  now?: number;
+  /** Override the in-process active set (tests only). */
+  activeRoots?: Iterable<string>;
+}
+
+export interface OrphanPruneResult {
+  removed: string[];
+  failed: Array<{ root: string; error: string }>;
+}
+
+async function sessionOfRoot(root: string): Promise<string | null> {
+  const socket = await findFileWithSuffix(path.join(root, "run"), ".sock");
+  if (socket) return path.basename(socket).replace(/\.sock$/, "");
+  // A socket-less root still names its session in the state directory.
+  const stateDir = path.join(root, "state", "herdr-core");
+  try {
+    const entries = await readdir(stateDir, { withFileTypes: true });
+    const session = entries.find((entry) => entry.isDirectory());
+    return session ? session.name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Confirm the env for an existing isolated root. `hc server stop` needs the
+ * session name because the socket is stored per session.
+ */
+function rootEnv(root: string, session: string | null, extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...extra,
+    ...(session === null ? {} : { HC_SESSION: session }),
+    XDG_STATE_HOME: path.join(root, "state"),
+    XDG_CONFIG_HOME: path.join(root, "config"),
+    XDG_RUNTIME_DIR: path.join(root, "run"),
+    HC_TERMINAL_ID: undefined,
+    HC_TERMINAL_SOCKET: undefined,
+  };
+}
+
+/**
+ * Stop and delete `hcit-*` roots left behind by interrupted test runs. Best
+ * effort: an unreadable or in-use root is kept, never removed speculatively.
+ */
+export async function pruneOrphanedHcRoots(options: OrphanPruneOptions = {}): Promise<OrphanPruneResult> {
+  const result: OrphanPruneResult = { removed: [], failed: [] };
+  const tmpdir = options.tmpdir ?? process.env.PI_HC_SUBAGENTS_TEST_TMPDIR ?? "/tmp";
+  const minAgeMs = options.minAgeMs ?? ORPHAN_MIN_AGE_MS;
+  const now = options.now ?? Date.now();
+  const activeRoots = options.activeRoots ?? [...activeCores].map((core) => core.root);
+
+  let entries;
+  try {
+    entries = await readdir(tmpdir, { withFileTypes: true });
+  } catch {
+    return result;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("hcit-")) continue;
+    const root = path.join(tmpdir, entry.name);
+    let mtimeMs: number;
+    try {
+      mtimeMs = (await stat(root)).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (!isOrphanRoot({ root, mtimeMs }, { activeRoots, minAgeMs, now })) continue;
+    try {
+      const session = await sessionOfRoot(root);
+      // Without a session there is no socket to address: only the directory is
+      // ours to delete. Never guess a session name (`default` would be someone
+      // else's core).
+      if (session !== null) await runCommand("hc", ["server", "stop", "--json"], rootEnv(root, session));
+      await rm(root, { recursive: true, force: true });
+      result.removed.push(root);
+    } catch (error) {
+      result.failed.push({ root, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return result;
+}
+
+let pruneOnce: Promise<void> | null = null;
+
+/** Prune abandoned roots once per process; never fails a test. */
+async function pruneOrphansOnce(): Promise<void> {
+  pruneOnce ??= pruneOrphanedHcRoots()
+    .then(() => {})
+    .catch(() => {});
+  await pruneOnce;
 }
 
 async function findSocket(runtimeDir: string, session: string): Promise<string> {
@@ -95,27 +246,23 @@ function runCommand(
 }
 
 export async function startIsolatedHc(options: IsolatedHcOptions = {}): Promise<IsolatedHc> {
+  installExitHook();
+  await pruneOrphansOnce();
+
   // Keep the runtime path short: Unix socket paths are limited to ~104 bytes.
   const root = await mkdtemp(path.join(process.env.PI_HC_SUBAGENTS_TEST_TMPDIR ?? "/tmp", "hcit-"));
   const session = `hct-${randomUUID().slice(0, 8)}`;
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...options.env,
-    HC_SESSION: session,
-    XDG_STATE_HOME: path.join(root, "state"),
-    XDG_CONFIG_HOME: path.join(root, "config"),
-    XDG_RUNTIME_DIR: path.join(root, "run"),
-    HC_TERMINAL_ID: undefined,
-    HC_TERMINAL_SOCKET: undefined,
-  };
+  const env: NodeJS.ProcessEnv = rootEnv(root, session, options.env);
   for (const dir of [env.XDG_STATE_HOME, env.XDG_CONFIG_HOME, env.XDG_RUNTIME_DIR]) {
     if (dir) await mkdir(dir, { recursive: true });
   }
 
   let cleaned = false;
+  const tracked = { root, env };
   const cleanup = async () => {
     if (cleaned) return;
     cleaned = true;
+    activeCores.delete(tracked);
     await runCommand("hc", ["server", "stop", "--json"], env);
     await rm(root, { recursive: true, force: true });
   };
@@ -125,6 +272,8 @@ export async function startIsolatedHc(options: IsolatedHcOptions = {}): Promise<
     await cleanup();
     throw new Error(`failed to start isolated hc: ${start.stderr || start.stdout}`);
   }
+  // Registered only after the core exists, and cleared by `cleanup`.
+  activeCores.add(tracked);
 
   const socketPath = await findSocket(env.XDG_RUNTIME_DIR as string, session);
   const core = new CoreClient({ socketPath, caller: null, env });
