@@ -4,4 +4,6 @@ coverage/
 *.log
 .DS_Store
 .pi/
+# Test fixture: a project-scoped agent dir must ship with the repo.
+!test/fixtures/agents/project/.pi/
 bench/results/
