@@ -1604,6 +1604,10 @@ When `ctx.hasUI`:
   ↳ scout      blocked   1m  permission   /repo
   ```
 - Update on state transitions, at most once per 250 ms (debounce).
+- A foreground (blocking) wait has no monitor, so the spawn itself announces the `starting`
+  record and each throttled observation (≤ once per second) announces the refreshed record.
+  Otherwise a blocking `hc_subagent` — and every batch call, which forces
+  `background: false` — renders nothing above the editor for its whole run.
 - Do not include task text or result text in the widget.
 
 ### 17.2 Renderers
