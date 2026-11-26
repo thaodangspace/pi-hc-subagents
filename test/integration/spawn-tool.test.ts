@@ -9,6 +9,7 @@ import { Scheduler } from "../../src/runtime/scheduler.ts";
 import { createRuntime } from "../../src/runtime/runtime.ts";
 import { MonitorManager } from "../../src/runtime/async-monitor.ts";
 import { Notifier } from "../../src/runtime/notifier.ts";
+import { HcSubagentsWidget } from "../../src/ui/widget.ts";
 import { registerSpawnTool } from "../../src/tools/spawn-tool.ts";
 import type { ToolSession } from "../../src/tools/session.ts";
 import { hcAvailable, startIsolatedHc } from "./harness.ts";
@@ -149,6 +150,51 @@ test("hc_subagent returns bounded text, usage, details, and publishes result.jso
       assert.ok((updates[i] as number) - (updates[i - 1] as number) >= 950, "onUpdate is throttled to 1/s");
     }
   } finally {
+    await harness.cleanup();
+  }
+});
+
+test("a foreground spawn drives the widget and the footer status while the child runs", { skip: !available }, async () => {
+  const harness = await createHarness("success");
+  const statuses: Array<string | undefined> = [];
+  const widgets: Array<string[] | undefined> = [];
+  const widget = new HcSubagentsWidget(
+    {
+      setStatus: (_key, text) => statuses.push(text),
+      setWidget: (_key, content) => widgets.push(content),
+    },
+    { debounceMs: 0, width: () => 100 },
+  );
+  try {
+    // Exactly how `index.ts` wires the widget: a record change is the only signal
+    // that redraws the widget and the footer status.
+    harness.session.onRecordChange = () => {
+      widget.refresh(
+        harness.session.registry.listForParent(harness.session.runtime.parentSessionId, { includeFinished: false }),
+      );
+    };
+
+    const result = await harness.execute({ agent: "reviewer", task: "Foreground widget task.", timeoutMs: 15_000 });
+
+    assert.equal(result.isError, false);
+    assert.equal(result.details.state, "completed");
+    assert.equal(result.details.background, false, "the default spawn waits in the foreground");
+    assert.ok(
+      statuses.some((text) => text?.startsWith("↳ reviewer")),
+      `the footer names the foreground child while it runs (saw ${JSON.stringify(statuses)})`,
+    );
+    assert.ok(
+      widgets.some((lines) => lines?.some((line) => line.startsWith("↳ reviewer"))),
+      "the widget shows a line for the foreground child",
+    );
+    assert.equal(
+      widgets.some((lines) => lines?.some((line) => line.includes("Foreground widget task"))),
+      false,
+      "the widget never carries task text",
+    );
+  } finally {
+    widget.dispose();
+    harness.session.onRecordChange = undefined;
     await harness.cleanup();
   }
 });

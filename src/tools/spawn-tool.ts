@@ -407,6 +407,12 @@ export function registerSpawnTool(
         if (record.pipeName) session.settleHints?.start(record.childId, record.pipeName);
         session.persistence?.append(record);
         session.service?.emitSpawned(record, single.task);
+        // The widget and footer status only redraw on a record change, so the
+        // spawn must announce the `starting` record for both the foreground and
+        // the background path. Without this a blocking `hc_subagent` (including
+        // every batch call, which forces `background: false`) shows nothing
+        // above the editor for the whole run.
+        session.onRecordChange?.(record);
 
         locateController = new AbortController();
         const locateSignal = signal
@@ -547,8 +553,13 @@ export function registerSpawnTool(
                 ...(next.sessionFile ? { sessionFile: next.sessionFile } : {}),
               });
             }
+            // One redraw per throttled observation keeps the widget elapsed time
+            // current during a foreground wait, exactly like the monitor hooks do
+            // for a background child.
+            const observed = session.registry.get(record.childId) ?? record;
+            session.onRecordChange?.(observed);
             if (!onUpdate) return;
-            const updated = session.registry.get(record.childId) ?? record;
+            const updated = observed;
             onUpdate({
               content: [
                 {
